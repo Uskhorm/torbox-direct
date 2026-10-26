@@ -2,17 +2,30 @@ import {createHmac,timingSafeEqual} from 'node:crypto';
 import {parseRequest,Catalog} from './catalog.mjs';
 import {MetadataSeed} from './seed.mjs';
 import {selectFile,TorBoxError} from './torbox.mjs';
-import {parsedStream,filterAndSort,formatter} from './format.mjs';
+import {parsedStream,filterAndSort,formatter,parseRelease} from './format.mjs';
 import {HashDiscovery,normalizeTitle} from './discovery.mjs';
+import {BoundedCache,memoizeParser} from './cache.mjs';
+import {parseTorrentTitle} from '@viren070/parse-torrent-title';
+
+export function publicSources(index,{fetchImpl=fetch}={}){
+  return {seed:new MetadataSeed(index,{fetchImpl}),discovery:new HashDiscovery(index,{fetchImpl})};
+}
+
+function bindResult(result,publicBase){
+  return {...result,streams:result.streams.map(stream=>({...stream,url:publicBase+'/play/'+stream.url.split('/play/')[1]}))};
+}
 
 export class DirectEngine {
   // libraryIndex holds this account's own TorBox items. Hosted mode gives every
   // configuration its own, so one account's library never reaches another's results.
-  constructor({index,libraryIndex=index,torbox,userData,signingKey,fetchImpl=fetch,tmdbKey}) {
+  constructor({index,libraryIndex=index,torbox,userData,signingKey,fetchImpl=fetch,tmdbKey,sources}) {
     this.index=index;this.libraryIndex=libraryIndex;this.torbox=torbox;this.userData=userData;this.signingKey=signingKey;
-    this.catalog=new Catalog(index,{fetchImpl,tmdbKey});this.seed=new MetadataSeed(index,{fetchImpl});
-    this.discovery=new HashDiscovery(index,{fetchImpl});
-    this.cache=new Map();this.inflight=new Map();
+    this.catalog=new Catalog(index,{fetchImpl,tmdbKey});
+    this.seed=sources?.seed||new MetadataSeed(index,{fetchImpl});
+    this.discovery=sources?.discovery||new HashDiscovery(index,{fetchImpl});
+    this.cache=new BoundedCache({maxEntries:128,maxWeight:2*1024*1024});this.inflight=new Map();
+    this.parseTitle=memoizeParser(parseRelease);
+    this.parseCandidate=memoizeParser(parseTorrentTitle,{maxEntries:8192,maxWeight:2*1024*1024});
   }
   sign(payload) {
     const data=Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -30,20 +43,19 @@ export class DirectEngine {
     return payload;
   }
   async search(type,id,publicBase) {
-    const request=parseRequest(type,id);const key=request.key+'\0'+publicBase;
+    const request=await this.catalog.resolve(parseRequest(type,id));const key=request.key;
     const previous=this.cache.get(key);
-    if(previous&&Date.now()-previous.at<20000) return {...previous.value,metrics:{...previous.value.metrics,totalMs:0,cache:'response'}};
-    if(this.inflight.has(key)) return this.inflight.get(key);
+    if(previous)return bindResult({...previous,metrics:{...previous.metrics,totalMs:0,cache:'response'}},publicBase);
+    if(this.inflight.has(key))return bindResult(await this.inflight.get(key),publicBase);
     const pending=this._search(request,publicBase).then(value=>{
-      this.cache.set(key,{at:Date.now(),value});
-      if(this.cache.size>128)this.cache.delete(this.cache.keys().next().value);
+      const weight=value.streams.reduce((sum,stream)=>sum+512+2*((stream.url||'').length+(stream.name||'').length+(stream.description||'').length+(stream.behaviorHints.filename||'').length),512);
+      this.cache.set(key,value,{ttl:value.streams.length?45000:5000,weight});
       return value;
     }).finally(()=>this.inflight.delete(key));
-    this.inflight.set(key,pending);return pending;
+    this.inflight.set(key,pending);return bindResult(await pending,publicBase);
   }
   async _search(request,publicBase) {
     const start=performance.now();
-    request=await this.catalog.resolve(request);
     const metadataPending=this.catalog.metadata(request);
     const seedPending=metadataPending.then(meta=>this.seed.candidates(request,meta));
     const discoveryPending=metadataPending.then(meta=>this.discovery.candidates(request,meta));
@@ -53,8 +65,8 @@ export class DirectEngine {
     request.anime||=meta.anime;
     const catalogMs=performance.now()-start;
     let then=performance.now();
-    let rows=this.index.search(request.key,meta.title,2500,{titleFallback:this.libraryIndex===this.index});
-    if(this.libraryIndex!==this.index)rows=[...new Map([...this.libraryIndex.search(request.key,meta.title),...rows].map(row=>[row.hash,row])).values()];
+    let rows=this.index.search(request.key,meta.title,-1,{titleFallback:this.libraryIndex===this.index});
+    if(this.libraryIndex!==this.index)rows=[...new Map([...this.libraryIndex.search(request.key,meta.title,-1),...rows].map(row=>[row.hash,row])).values()];
     const candidates=new Map(rows.map(row=>[row.hash,row]));
     const titleWords=normalizeTitle(meta.title).split(' ');
     for(const item of this.libraryFiles||[]){
@@ -62,24 +74,30 @@ export class DirectEngine {
       const prior=candidates.get(item.hash);
       candidates.set(item.hash,{...prior,hash:item.hash,title:item.title,size:item.size,source:'torbox-library-files',mediaMatched:prior?.mediaMatched||false});
     }
-    rows=[...candidates.values()];
+    rows=[...candidates.values()].filter(row=>{
+      if(request.season===undefined||this.ownedHashes?.has(row.hash))return true;
+      const parsed=this.parseCandidate(row.title);
+      if(parsed.seasons?.length&&!parsed.seasons.includes(request.season))return false;
+      if(parsed.seasons?.length&&parsed.episodes?.length&&!parsed.episodes.includes(request.episode))return false;
+      return true;
+    });
     if(!rows.length&&seed.status==='rejected'&&discovery.status==='rejected')throw seed.reason;
     const source=seed.status==='fulfilled'?seed.value.source:'existing-index';const indexMs=performance.now()-then;
     then=performance.now();const cached=await this.torbox.checkCached(rows.map(x=>x.hash));const torboxMs=performance.now()-then;
     const matched=[];
+    const previousSeasons=Object.entries(meta.seasonEpisodes||{}).filter(([season])=>Number(season)<request.season);
+    const absoluteEpisode=request.anime&&(request.season===1||previousSeasons.length===request.season-1)?previousSeasons.reduce((sum,[,count])=>sum+count,request.episode):undefined;
     for(const release of rows) {
       const item=cached.get(release.hash);if(!item)continue;
-      const previousSeasons=Object.entries(meta.seasonEpisodes||{}).filter(([season])=>Number(season)<request.season);
-      const absoluteEpisode=request.anime&&(request.season===1||previousSeasons.length===request.season-1)?previousSeasons.reduce((sum,[,count])=>sum+count,request.episode):undefined;
-      const file=selectFile(item.files,{...request,title:meta.title,folderName:release.title,absoluteEpisode});if(!file)continue;
-      const stream=parsedStream(release,item,file,request);
+      const file=selectFile(item.files,{...request,title:meta.title,folderName:release.title,absoluteEpisode,parse:this.parseTitle});if(!file)continue;
+      const stream=parsedStream(release,item,file,request,this.parseTitle);
       stream.library=this.ownedHashes?.has(release.hash)||false;
       matched.push(stream);
     }
     const ranked=filterAndSort(matched,this.userData,meta,request);
     // Deduplicate the actual selected file, preserving distinct remuxes/editions.
     const seen=new Set();
-    const unique=ranked.filter(s=>{const key=`${s.filename}:${s.size}`;if(seen.has(key))return false;seen.add(key);return true;}).slice(0,60);
+    const unique=ranked.filter(s=>{const key=`${s.filename}:${s.size}`;if(seen.has(key))return false;seen.add(key);return true;});
     const fmt=formatter(this.userData,meta);
     const streams=await Promise.all(unique.map(async s=>{
       const rendered=await fmt.format(s);

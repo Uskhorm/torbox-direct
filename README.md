@@ -1,11 +1,15 @@
 # TorBox Direct
 
+[![Checks](https://github.com/Uskhorm/torbox-direct/actions/workflows/ci.yml/badge.svg)](https://github.com/Uskhorm/torbox-direct/actions/workflows/ci.yml)
+
+[Configure the addon](https://nuvio-torbox-direct.vercel.app/configure) · [GitHub](https://github.com/Uskhorm/torbox-direct) · [Contribute](CONTRIBUTING.md)
+
 A Stremio and Nuvio stream addon that lists **TorBox-cached** releases for whatever movie or episode you open. It talks to TorBox directly: no Torrentio, Comet, MediaFusion or AIOStreams instance sits in the middle. Results are rendered with the AIOStreams formatter, so cards look like an AIOStreams setup (4K · DV · IMAX, sizes, release groups).
 
 ```text
 catalog ID (tt… / tmdb:…)
   → ID-to-hash lookup (Zilean/DMM, Knaben, raw Torz metadata, your own TorBox files)
-  → one batched TorBox cache check
+  → batched TorBox cache checks (short-lived per-account memoization)
   → the exact cached video file (right episode inside season packs)
   → filter, rank and format
   → stream cards
@@ -25,6 +29,10 @@ MAL, Kitsu, AniList and AniDB IDs are converted to IMDb/season/episode using a b
 1. Open the configure page of an instance, for example `https://nuvio-torbox-direct.vercel.app/configure`.
 2. Paste your own TorBox API key. A TMDB key is optional: the addon also maps TMDB IDs through cached metadata and Wikidata.
 3. Copy the private manifest URL into Nuvio or Stremio. The same URL works on TV, tablet and desktop.
+
+Version 0.4 searches both IMDb-tagged and title-only metadata even when ID search already has results. It fetches complete Torznab ID results, checks candidates beyond the former 2,500-hash cutoff, and returns all matching distinct files rather than the first 60. AIOStreams' native parser and sorter drive the quality fields and ordering, with an additional language-label check to avoid mistaking title words or release-group names for audio languages. The existing card formatter is preserved.
+
+Repeated and next-episode searches reuse bounded account caches and in-flight hash checks. An indexed anime crosswalk avoids scanning the entire mapping on every request. These changes preserve fresh playback availability checks. See [verification and performance](docs/verification.md) for measured results and remaining coverage gaps.
 
 ## Privacy and security model
 
@@ -74,12 +82,12 @@ Only preference keys are copied; credentials and service settings are ignored.
 
 - Coverage depends on the available metadata indexes and your library. The documented TorBox Voyager search hostname did not resolve during verification. The main cache API takes torrent hashes, not media IDs. See [request trace](docs/request-trace.md).
 - Supports IMDb (`tt…`), TMDB via cached/Wikidata mappings or an optional TMDB key, and unambiguously mapped MAL/Kitsu/AniList/AniDB IDs. Coverage can still differ from other addons and is not guaranteed for every release.
-- The hosted adapter supports the profile's basic resolution, quality, visual-tag, language and keyword filters/sorting and uses the original AIOStreams formatter. Advanced SEL, SeaDex and bitrate ranking are not implemented.
+- The hosted adapter uses AIOStreams' file parser, sorter and formatter with basic resolution, quality, visual-tag, language and keyword filtering. Full SEL, synchronized regex lists, SeaDex and bitrate enrichment are not implemented.
 - Hosted warm caches are instance-local and can reset on a cold start; a fast warm request is not a guarantee of cold-request latency.
-- Response lists are capped at 60 streams.
+- Metadata services may impose their own result limits. The addon does not impose a fixed hash-candidate or stream-result cap. A finite reference comparison cannot establish complete-catalog parity.
 
 ## License
 
 AGPL-3.0-only (see `LICENSE`). A running instance serves its exact source at `/source.zip`.
 
-Includes the formatter from [AIOStreams](https://github.com/Viren070/AIOStreams) v2.37.0 by Viren070 (AGPL-3.0), in `vendor/` with its license. Release metadata comes from [Zilean](https://github.com/iPromKnight/zilean); catalog metadata from Cinemeta. Not affiliated with TorBox.
+Includes the parser, sorter and formatter from [AIOStreams](https://github.com/Viren070/AIOStreams) v2.37.0 by Viren070 (AGPL-3.0), in `vendor/` with [attribution and build instructions](vendor/NOTICE.md). Release metadata comes from Zilean/DMM, Knaben and the public Torz metadata index; catalog metadata from Cinemeta, with optional TMDB enrichment. Not affiliated with TorBox.

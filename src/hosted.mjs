@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {TorBox} from './torbox.mjs';
 import {ReleaseIndex} from './index.mjs';
-import {DirectEngine} from './engine.mjs';
+import {DirectEngine,publicSources} from './engine.mjs';
 import {configurationCipher,ConfigurationError} from './configuration.mjs';
 import {configureHTML,configureScript} from './configure.mjs';
 
@@ -22,7 +22,7 @@ const PAGE_CSP="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'
 
 export function manifest(config,baseUrl) {
   return {
-    id:'app.vercel.torbox-direct',version:'0.3.0',name:'TorBox Direct',
+    id:'app.vercel.torbox-direct',version:'0.4.0',name:'TorBox Direct',
     description:'Direct TorBox cache checks and playback, with your 4K, Dolby Vision and IMAX stream style. Discovery uses an ID-to-hash release index.',
     logo:baseUrl+'/logo.png',
     resources:[{name:'stream',types:['movie','series','anime'],idPrefixes:['tt','tmdb:','mal:','kitsu:','anilist:','anidb:']}],
@@ -61,11 +61,12 @@ async function readJson(req) {
 }
 
 export function createHostedHandler({secret=process.env.TORBOX_DIRECT_SECRET,publicBaseUrl=process.env.PUBLIC_BASE_URL,fetchImpl=fetch,userData}={}) {
-  let cipher,index,preferences;
+  let cipher,index,preferences,sources;
   const engines=new Map();
   const ready=()=>{
     cipher??=configurationCipher(secret);
     index??=sharedIndex();
+    sources??=publicSources(index,{fetchImpl});
     preferences??=userData||loadPreferences();
   };
   // Best-effort per-instance throttle for link generation (each attempt calls TorBox).
@@ -90,7 +91,7 @@ export function createHostedHandler({secret=process.env.TORBOX_DIRECT_SECRET,pub
     engine=new DirectEngine({
       index,libraryIndex:new ReleaseIndex(),
       torbox:new TorBox({apiKey:config.apiKey,fetchImpl}),
-      userData:preferences,signingKey:cipher.signingKey(id),tmdbKey:config.tmdbKey,fetchImpl,
+      userData:preferences,signingKey:cipher.signingKey(id),tmdbKey:config.tmdbKey,fetchImpl,sources,
     });
     engines.set(id,engine);
     return engine;

@@ -1,9 +1,13 @@
 import {parseTorrentTitle} from '@viren070/parse-torrent-title';
+import {memoizeParser} from './cache.mjs';
+import {normaliseTitle} from '../vendor/aiostreams-parser.mjs';
+const parsePublicTitle=memoizeParser(parseTorrentTitle,{maxEntries:4096,maxWeight:2*1024*1024});
 
-export const normalizeTitle=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+export const normalizeTitle=value=>String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,' and ').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+export const canonicalTitle=value=>normaliseTitle(String(value||''));
 export function matchesTitle(raw,metadata,request){
-  const parsed=parseTorrentTitle(raw);
-  if(normalizeTitle(parsed.title)!==normalizeTitle(metadata.title))return false;
+  const parsed=parsePublicTitle(raw);
+  if(![metadata.title,...metadata.aliases||[]].some(title=>canonicalTitle(parsed.title)===canonicalTitle(title)))return false;
   if(parsed.year&&metadata.year&&(request.type==='movie'||request.season===1)&&Number(parsed.year)!==metadata.year)return false;
   if(request.season!==undefined&&parsed.seasons?.length&&!parsed.seasons.includes(request.season))return false;
   return true;
@@ -13,7 +17,7 @@ export function matchesTitle(raw,metadata,request){
 export class HashDiscovery {
   constructor(index,{fetchImpl=fetch}={}){this.index=index;this.fetch=fetchImpl;this.inflight=new Map();}
   async candidates(request,metadata){
-    const key='hash-index:v3:'+request.key;
+    const key='hash-index:v5:'+request.key;
     const cached=this.index.getMetadata(key);
     if(cached&&Date.now()-cached.cachedAt<(cached.count?3600000:60000))return {count:cached.count,source:'hash-index-cache'};
     if(this.inflight.has(key))return this.inflight.get(key);
@@ -33,10 +37,12 @@ export class HashDiscovery {
       const rows=[];
       // This is the public raw metadata index, not its Stremio addon or store API.
       // No credentials, playback URLs, or debrid resolution go through this host.
-      for(const offset of [0,500]){
+      {
         const url=new URL('https://stremthru.13377001.xyz/v0/torznab/api');
-        const params={t:request.type==='movie'?'movie':'tvsearch',imdbid:metadata.imdb.slice(2),o:'json',limit:'500',offset:String(offset)};
-        if(request.type==='series'){params.season=String(request.season);params.ep=String(request.episode);}
+        // The upstream API explicitly skips slicing when limit=0. Fetch the
+        // complete ID result once; fixed page caps hid high-quality releases.
+        // A show-level query also finds complete packs missing episode mappings.
+        const params={t:request.type==='movie'?'movie':'tvsearch',imdbid:metadata.imdb.slice(2),o:'json',limit:'0'};
         for(const [name,value] of Object.entries(params))url.searchParams.set(name,value);
         const response=await this.fetch(url,{signal:AbortSignal.timeout(6500),redirect:'error'});
         if(!response.ok)throw new Error('Metadata index unavailable');
@@ -51,7 +57,6 @@ export class HashDiscovery {
           if(id&&!trusted||!trusted&&!matchesTitle(item.title,metadata,request))continue;
           rows.push({hash:hash.toLowerCase(),title:item.title,size:Number(attrs.size)||0,media:[request.key],mediaTrusted:trusted});
         }
-        if(items.length<500)break;
       }
       return rows;
     })();

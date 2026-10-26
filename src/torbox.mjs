@@ -1,4 +1,6 @@
 import {parseTorrentTitle} from '@viren070/parse-torrent-title';
+import {BoundedCache} from './cache.mjs';
+import {normaliseTitle} from '../vendor/aiostreams-parser.mjs';
 const HASH = /^[a-f0-9]{40}$/i;
 
 export class TorBoxError extends Error {
@@ -18,6 +20,9 @@ export class TorBox {
     this.owned = null;
     this.ownedAt = 0;
     this.inflight = new Map();
+    this.availability=new BoundedCache({maxEntries:2048,maxWeight:3*1024*1024});
+    this.negativeAvailability=new BoundedCache({maxEntries:8192,maxWeight:512*1024});
+    this.availabilityPending=new Map();
   }
 
   async request(path, { method = 'GET', body, query = {}, timeoutMs = 30000 } = {}) {
@@ -27,7 +32,7 @@ export class TorBox {
     try {
       response = await this.fetch(url, {
         method,
-        headers: { Authorization: `Bearer ${this.apiKey}`, 'User-Agent': 'TorBoxDirect/0.1', ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'User-Agent': 'TorBoxDirect/0.4', ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined,
         signal: AbortSignal.timeout(timeoutMs),
         redirect: 'error',
@@ -48,11 +53,53 @@ export class TorBox {
 
   async account() { return this.request('/user/me', { query: { settings: false } }); }
 
-  async checkCached(hashes) {
+  async checkCached(hashes,{fresh=false}={}) {
     hashes = [...new Set(hashes.map(h => String(h).toLowerCase()))];
     if (hashes.some(h => !HASH.test(h))) throw new TorBoxError('BAD_HASH', 'Invalid torrent hash', 400);
+    const found=new Map(),missing=[],waiting=[];
+    for(const hash of hashes){
+      const hit=fresh?undefined:this.availability.get(hash)??this.negativeAvailability.get(hash);
+      if(hit!==undefined){if(hit)found.set(hash,hit);continue;}
+      const pending=fresh?undefined:this.availabilityPending.get(hash);
+      if(pending)waiting.push({hash,pending});else missing.push(hash);
+    }
+    if(missing.length){
+      const batch=this._requestCached(missing).then(({found,checked})=>{
+        for(const hash of checked){
+          const item=found.get(hash)||null;
+          const weight=item?512+(item.files||[]).reduce((sum,file)=>sum+256+2*((file.name||'').length+(file.short_name||'').length),0):64;
+          if(item){this.availability.set(hash,item,{ttl:45000,weight});this.negativeAvailability.delete(hash);}
+          else{this.availability.delete(hash);this.negativeAvailability.set(hash,null,{ttl:8000,weight});}
+        }
+        return found;
+      });
+      for(const hash of missing){
+        const pending=batch.then(result=>result.get(hash));
+        if(!fresh){
+          this.availabilityPending.set(hash,pending);
+          const clear=()=>{if(this.availabilityPending.get(hash)===pending)this.availabilityPending.delete(hash);};
+          pending.then(clear,clear);
+        }
+        waiting.push({hash,pending});
+      }
+    }
+    const results=await Promise.allSettled(waiting.map(async({hash,pending})=>({hash,item:await pending})));
+    let failure,succeeded=hashes.length-waiting.length;
+    for(const result of results){
+      if(result.status==='fulfilled'){succeeded++;if(result.value.item)found.set(result.value.hash,result.value.item);}
+      else{if(['BAD_TOKEN','AUTH_ERROR','NO_AUTH'].includes(result.reason.code))throw result.reason;failure=result.reason;}
+    }
+    if(failure&&!succeeded)throw failure;
+    return found;
+  }
+
+  async _requestCached(hashes) {
     const found = new Map();
-    const chunks=[];for(let offset=0;offset<hashes.length;offset+=500)chunks.push(hashes.slice(offset,offset+500));
+    const checked=new Set();
+    // TorBox's POST endpoint supports large hash arrays. Batch size is a
+    // transport boundary, never a candidate cap; every hash is checked.
+    const batchSize=4096;
+    const chunks=[];for(let offset=0;offset<hashes.length;offset+=batchSize)chunks.push(hashes.slice(offset,offset+batchSize));
     let succeeded=0,failure;
     for(let offset=0;offset<chunks.length;offset+=2){
       const results=await Promise.allSettled(chunks.slice(offset,offset+2).map(async chunk=>({chunk,data:await this.request('/torrents/checkcached',{method:'POST',body:{hashes:chunk},query:{format:'object',list_files:true},timeoutMs:12000})})));
@@ -61,15 +108,16 @@ export class TorBox {
           if(['BAD_TOKEN','AUTH_ERROR','NO_AUTH'].includes(result.reason.code))throw result.reason;
           failure=result.reason;continue;
         }
-        succeeded++;const {chunk,data}=result.value;
+        succeeded++;const {chunk,data}=result.value;for(const hash of chunk)checked.add(hash);
+        const requested=new Set(chunk);
         for (const [key, item] of Object.entries(data || {})) {
           const hash = (item?.hash || key).toLowerCase();
-          if (chunk.includes(hash) && item && typeof item === 'object' && Array.isArray(item.files) && item.files.length) found.set(hash, item);
+          if (requested.has(hash) && item && typeof item === 'object' && Array.isArray(item.files) && item.files.length) found.set(hash, item);
         }
       }
     }
     if(failure&&!succeeded)throw failure;
-    return found;
+    return {found,checked};
   }
 
   async listOwned({ fresh = false } = {}) {
@@ -97,7 +145,7 @@ export class TorBox {
 
   async _ensureOwned(hash) {
     // Recheck at playback time. A stale positive search result must never start a download.
-    if (!(await this.checkCached([hash])).has(hash)) throw new TorBoxError('NO_LONGER_CACHED', 'This release is no longer cached on TorBox', 409);
+    if (!(await this.checkCached([hash],{fresh:true})).has(hash)) throw new TorBoxError('NO_LONGER_CACHED', 'This release is no longer cached on TorBox', 409);
     const existing = (await this.listOwned()).find(t => t.hash?.toLowerCase() === hash);
     if (existing) return existing;
     const form = new FormData();
@@ -133,7 +181,7 @@ export class TorBox {
   }
 }
 
-export function selectFile(files, { season, episode, title, anime, absoluteEpisode, folderName } = {}) {
+export function selectFile(files, { season, episode, title, anime, absoluteEpisode, folderName,parse=parseTorrentTitle } = {}) {
   const videos = files.filter(f => Number.isInteger(f.id) && /\.(mkv|mp4|m4v|avi|webm|mov|m2ts|ts)$/i.test(f.name || '') && !/(?:^|[ /\\._-])(sample|trailer|featurette)(?:[ /\\._-]|$)/i.test(f.name));
   if (season !== undefined && episode !== undefined) {
     const matched = videos.filter(f => {
@@ -143,8 +191,8 @@ export function selectFile(files, { season, episode, title, anime, absoluteEpiso
       const alternate = name.match(/(?:^|[^\d])(\d{1,2})x(\d{2,3})(?!\d)/i);
       if(alternate)return Number(alternate[1])===season&&Number(alternate[2])===episode;
       if(!anime||!Number.isInteger(absoluteEpisode))return false;
-      const parsed=parseTorrentTitle((f.short_name||name).split(/[\\/]/).pop());
-      const folder=parseTorrentTitle(folderName||'');
+      const parsed=parse((f.short_name||name).split(/[\\/]/).pop());
+      const folder=parse(folderName||'');
       if(folder.seasons?.length&&!folder.seasons.includes(season))return false;
       const target=folder.seasons?.length?episode:absoluteEpisode;
       return !parsed.seasons?.length&&parsed.episodes?.length===1&&parsed.episodes[0]===target;
@@ -152,8 +200,7 @@ export function selectFile(files, { season, episode, title, anime, absoluteEpiso
     return matched.sort((a,b) => b.size - a.size)[0] || null;
   }
   if(videos.length>1&&title){
-    const normalize=s=>s.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-    const specific=videos.filter(f=>normalize(parseTorrentTitle(f.short_name||f.name.split(/[\\/]/).pop()).title||'')===normalize(title));
+    const specific=videos.filter(f=>normaliseTitle(parse(f.short_name||f.name.split(/[\\/]/).pop()).title||'')===normaliseTitle(title));
     return specific.sort((a,b)=>b.size-a.size)[0]||null;
   }
   return videos.sort((a,b) => b.size - a.size)[0] || null;

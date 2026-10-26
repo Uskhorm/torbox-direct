@@ -42,7 +42,8 @@ export class ReleaseIndex {
       const words=row.title.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu)||[];
       return tokens.every(t=>words.includes(t));
     });
-    return [...new Map([...exact,...titled].map(row=>[row.hash,row])).values()].slice(0,limit);
+    const result=[...new Map([...titled,...exact].map(row=>[row.hash,row])).values()];
+    return limit<0?result:result.slice(0,limit);
   }
 
   setMetadata(media, metadata) {

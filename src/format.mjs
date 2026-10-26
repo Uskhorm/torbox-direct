@@ -1,35 +1,46 @@
-import {parseTorrentTitle} from '@viren070/parse-torrent-title';
+import {parseFile,sortNative,normaliseTitle} from '../vendor/aiostreams-parser.mjs';
 import {createFormatter} from '../vendor/aiostreams-formatter.mjs';
 
-const resolutionNames={'4k':'2160p','2k':'1440p'};
-const languageNames={en:'English',eng:'English',english:'English',de:'German',german:'German',fr:'French',french:'French',ja:'Japanese',japanese:'Japanese',ru:'Russian',russian:'Russian',multi:'Multi','dual audio':'Dual Audio',dubbed:'Dubbed'};
 
-export function parsedStream(release,cached,file,request) {
-  const folder=parseTorrentTitle(release.title);
+export function parseRelease(value){
+  const parsed=parseFile(value);
+  // A title (Shang-Chi) or a Cyrillic release-group name does not identify the
+  // audio language. Parse language labels from the attributes after the title.
+  let attributes=String(value);
+  if(parsed.title){
+    const words=parsed.title.match(/[\p{L}\p{N}&]+/gu)||[];
+    const pattern=words.map(word=>/^(?:and|&)$/i.test(word)?'(?:and|&)':word.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('[\\s._:-]+');
+    if(pattern)attributes=attributes.replace(new RegExp(pattern,'iu'),' ');
+  }
+  if(parsed.releaseGroup)attributes=attributes.replace(parsed.releaseGroup,' ');
+  attributes=attributes.replace(/[^\p{Script=Latin}\p{N}\p{P}\p{Z}]/gu,' ');
+  const languageFile=parseFile('Media '+attributes);
+  const countedLanguages=[];
+  if(/(?:^|[ ._-])\d+xEng(?:[ ._-]|$)/i.test(attributes))countedLanguages.push('English');
+  if(/(?:^|[ ._-])\d+xRus(?:[ ._-]|$)/i.test(attributes))countedLanguages.push('Russian');
+  return {...parsed,languages:[...new Set([...(languageFile.languages||[]),...countedLanguages])]};
+}
+
+export function parsedStream(release,cached,file,request,parse=parseRelease) {
+  const folder=parse(release.title);
   const filename=file.short_name||file.name.split(/[\\/]/).pop();
-  const parsed=parseTorrentTitle(filename);
-  const hdr=[...new Set([...(folder.hdr||[]),...(parsed.hdr||[])])];
-  const visualTags=[];
-  if (hdr.some(x=>/dv|dolby.?vision/i.test(x))) visualTags.push(hdr.some(x=>/^hdr/i.test(x))?'HDR+DV':'DV');
-  for (const tag of hdr) if (/^HDR(?:10\+?)?$/i.test(tag)) visualTags.push(tag.toUpperCase());
-  if (/\bIMAX\b/i.test(release.title+' '+filename)) visualTags.push('IMAX');
-  const fullName=release.title+' '+filename;
-  if(folder.threeD||parsed.threeD||/\b3D\b|\b(?:FULL|HALF)[ ._-]*SBS\b/i.test(fullName))visualTags.push('3D');
-  // IMAX Enhanced is a distribution format, not evidence of an AI upscale.
-  if(/\bupscal(?:ed|e|ing)\b/i.test(fullName.replace(/\bIMAX[ ._-]+Enhanced\b/gi,'IMAX')))visualTags.push('Upscaled');
-  if(/\bAI[ ._-]*(?:upscal|enhanc|remaster)/i.test(fullName))visualTags.push('AI');
-  const languages=[...new Set([...(parsed.languages||[]),...(folder.languages||[])].map(x=>languageNames[String(x).toLowerCase()]||x))];
+  const parsed=parse(filename),fullName=release.title+' '+filename;
+  const visualTags=[...new Set([...(folder.visualTags||[]),...(parsed.visualTags||[])])];
+  if (/\bIMAX\b/i.test(fullName)&&!visualTags.includes('IMAX'))visualTags.push('IMAX');
+  if(/\b3D\b|\b(?:FULL|HALF)[ ._-]*SBS\b/i.test(fullName)&&!visualTags.includes('3D'))visualTags.push('3D');
+  if(/\bupscal(?:ed|e|ing)\b/i.test(fullName.replace(/\bIMAX[ ._-]+Enhanced\b/gi,'IMAX'))&&!visualTags.includes('Upscaled'))visualTags.push('Upscaled');
+  if(/\bAI[ ._-]*(?:upscal|enhanc|remaster)/i.test(fullName)&&!visualTags.includes('AI'))visualTags.push('AI');
+  const languages=[...new Set([...(parsed.languages||[]),...(folder.languages||[])])];
   return {
     id:`${release.hash}:${file.id}`,type:'debrid',filename,folderName:release.title,size:Number(file.size),folderSize:Number(cached.size)||release.size,
     library:false,service:{id:'torbox',cached:true},addon:{name:'TorBox Direct',preset:{type:'custom'},manifest:{id:'local.torbox.direct'}},torrent:{infoHash:release.hash},
-    parsedFile:{title:parsed.title||folder.title,year:parsed.year||folder.year,resolution:resolutionNames[parsed.resolution||folder.resolution]||parsed.resolution||folder.resolution||'Unknown',quality:parsed.quality||folder.quality||'Unknown',visualTags:[...new Set(visualTags)],audioTags:parsed.audio||folder.audio||[],audioChannels:parsed.channels||folder.channels||[],languages:languages.length?languages:['Unknown'],releaseGroup:(parsed.group||folder.group||'').length>1?(parsed.group||folder.group):undefined,encode:parsed.codec||folder.codec,seasons:request.season===undefined?[]:[request.season],episodes:request.episode===undefined?[]:[request.episode],editions:[...new Set([...(folder.editions||[]),...(parsed.editions||[])])] },
+    parsedFile:{...folder,...parsed,title:parsed.title||folder.title,year:parsed.year||folder.year,resolution:parsed.resolution||folder.resolution||'Unknown',quality:parsed.quality||folder.quality||'Unknown',visualTags,audioTags:parsed.audioTags?.length?parsed.audioTags:folder.audioTags||[],audioChannels:parsed.audioChannels?.length?parsed.audioChannels:folder.audioChannels||[],languages:languages.length?languages:['Unknown'],releaseGroup:parsed.releaseGroup||folder.releaseGroup,encode:parsed.encode||folder.encode,seasons:request.season===undefined?[]:[request.season],episodes:request.episode===undefined?[]:[request.episode],editions:[...new Set([...(folder.editions||[]),...(parsed.editions||[])])] },
     _release:release,_cached:cached,_file:file,_titles:[folder.title,parsed.title].filter(Boolean),
   };
 }
 
-function rank(value,preferences) { const i=preferences?.indexOf(value)??-1;return i<0?999:i; }
 export function filterAndSort(streams,userData,metadata,request) {
-  const normalize=s=>String(s).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+  const normalize=s=>String(s).normalize('NFKC').replace(/&/g,' and ').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
   const titleWords=normalize(metadata.title).split(' ');
   streams=streams.filter(s=>{
     const p=s.parsedFile;const combined=normalize(s.folderName+' '+s.filename);
@@ -37,7 +48,7 @@ export function filterAndSort(streams,userData,metadata,request) {
       if(userData.titleMatching?.enabled&&userData.titleMatching.mode==='exact'){
         const title=normalize(metadata.title);
         const latin=s=>normalize(s.replace(/[^\p{Script=Latin}\p{N}\s]/gu,' '));
-        if(!s._titles.some(t=>normalize(t)===title||(latin(metadata.title)===title&&latin(t)===title)))return false;
+        if(!s._titles.some(t=>[metadata.title,...metadata.aliases||[]].some(expected=>normaliseTitle(t)===normaliseTitle(expected))||(latin(metadata.title)===title&&latin(t)===title)))return false;
       }else if(!titleWords.every(w=>combined.split(' ').includes(w)))return false;
       if((request.type==='movie'||request.season===1)&&userData.yearMatching?.enabled&&metadata.year&&p.year&&Number(p.year)!==metadata.year)return false;
     }
@@ -48,22 +59,12 @@ export function filterAndSort(streams,userData,metadata,request) {
     if (userData.requiredQualities?.length && !userData.requiredQualities.includes(p.quality)) return false;
     if (userData.requiredVisualTags?.length && !userData.requiredVisualTags.some(t=>p.visualTags.includes(t))) return false;
     const required=userData.requiredLanguages||[];
-    if (required.length && !p.languages.some(l=>required.includes(l)||(required.includes('Original')&&l===metadata.originalLanguage))) return false;
+    if(p.languages.includes(metadata.originalLanguage)&&!p.languages.includes('Original'))p.languages=[...p.languages,'Original'];
+    if (required.length && !p.languages.some(l=>required.includes(l))) return false;
     return true;
   });
-  const keys=userData.sortCriteria?.cached||[];
-  return streams.sort((a,b)=>{
-    for (const {key,direction} of keys) {
-      let av=0,bv=0;
-      if (key==='keyword') {av=(userData.preferredKeywords||[]).filter(k=>(a.folderName+' '+a.filename).toLowerCase().includes(k.toLowerCase())).length;bv=(userData.preferredKeywords||[]).filter(k=>(b.folderName+' '+b.filename).toLowerCase().includes(k.toLowerCase())).length;}
-      else if (key==='resolution'||key==='quality'||key==='language') {const field=key==='resolution'?'preferredResolutions':key==='quality'?'preferredQualities':'preferredLanguages';av=-Math.min(...(key==='language'?a.parsedFile.languages:[a.parsedFile[key]]).map(v=>rank(v,userData[field])));bv=-Math.min(...(key==='language'?b.parsedFile.languages:[b.parsedFile[key]]).map(v=>rank(v,userData[field])));}
-      else if (key==='visualTag') {av=-Math.min(999,...a.parsedFile.visualTags.map(v=>rank(v,userData.preferredVisualTags)));bv=-Math.min(999,...b.parsedFile.visualTags.map(v=>rank(v,userData.preferredVisualTags)));}
-      else if (key==='size') {av=a.size;bv=b.size;}
-      else continue;
-      if (av!==bv) return direction==='asc'?av-bv:bv-av;
-    }
-    return a.id.localeCompare(b.id);
-  });
+  for(const stream of streams)stream.keywordMatched=(userData.preferredKeywords||[]).some(keyword=>(stream.folderName+' '+stream.filename).toLowerCase().includes(keyword.toLowerCase()));
+  return sortNative(streams,{...userData,sortCriteria:{global:[],cached:[],uncached:[],...userData.sortCriteria}},{type:request.type,isAnime:!!(request.anime||metadata.anime)});
 }
 
 export function formatter(userData,metadata) {return createFormatter({userData,addonName:userData.addonName,originalLanguage:metadata.originalLanguage,year:metadata.year,primaryTitle:metadata.title});}
