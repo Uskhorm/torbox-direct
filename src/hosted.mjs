@@ -22,10 +22,10 @@ const PAGE_CSP="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'
 
 export function manifest(config,baseUrl) {
   return {
-    id:'app.vercel.torbox-direct',version:'0.2.0',name:'TorBox Direct',
+    id:'app.vercel.torbox-direct',version:'0.3.0',name:'TorBox Direct',
     description:'Direct TorBox cache checks and playback, with your 4K, Dolby Vision and IMAX stream style. Discovery uses an ID-to-hash release index.',
     logo:baseUrl+'/logo.png',
-    resources:[{name:'stream',types:['movie','series','anime'],idPrefixes:[...(config?.tmdbKey?['tt','tmdb:']:['tt']),'mal:','kitsu:','anilist:','anidb:']}],
+    resources:[{name:'stream',types:['movie','series','anime'],idPrefixes:['tt','tmdb:','mal:','kitsu:','anilist:','anidb:']}],
     types:['movie','series','anime'],catalogs:[],
     behaviorHints:{configurable:true,configurationRequired:!config},
   };
@@ -126,8 +126,9 @@ export function createHostedHandler({secret=process.env.TORBOX_DIRECT_SECRET,pub
       if(path==='/configure.js')return send(200,configureScript,{'Content-Type':'text/javascript; charset=utf-8'});
       if(path==='/health')return send(200,{ok:true});
       if(path==='/manifest.json')return send(200,manifest(null,baseUrl(req)),addonHeaders);
-      if(path==='/logo.png'||path==='/logo.svg'){
-        res.writeHead(200,{...SECURITY_HEADERS,...addonHeaders,'Content-Type':path.endsWith('.png')?'image/png':'image/svg+xml','Cache-Control':'public, max-age=86400'});
+      if(['/logo.png','/logo.svg','/favicon.ico','/apple-touch-icon.png'].includes(path)){
+        const type=path.endsWith('.ico')?'image/x-icon':path.endsWith('.png')?'image/png':'image/svg+xml';
+        res.writeHead(200,{...SECURITY_HEADERS,...addonHeaders,'Content-Type':type,'Cache-Control':'public, max-age=86400'});
         res.end(req.method==='HEAD'?undefined:readFileSync(join(ROOT,'deployment',path.slice(1))));return;
       }
       if(path==='/source.zip') {

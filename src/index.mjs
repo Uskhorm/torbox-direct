@@ -8,21 +8,22 @@ export class ReleaseIndex {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS releases (hash TEXT PRIMARY KEY, title TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL, updated_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS media_releases (media TEXT NOT NULL, hash TEXT NOT NULL REFERENCES releases(hash), PRIMARY KEY(media,hash));
+      CREATE TABLE IF NOT EXISTS media_releases (media TEXT NOT NULL, hash TEXT NOT NULL REFERENCES releases(hash), verified INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(media,hash));
       CREATE TABLE IF NOT EXISTS metadata (media TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS release_title ON releases(title);`);
+    if(!this.db.prepare('PRAGMA table_info(media_releases)').all().some(column=>column.name==='verified'))this.db.exec('ALTER TABLE media_releases ADD COLUMN verified INTEGER NOT NULL DEFAULT 1');
   }
 
   import(rows, source) {
     const release = this.db.prepare('INSERT INTO releases VALUES(?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET title=excluded.title,size=MAX(releases.size,excluded.size),updated_at=excluded.updated_at');
-    const map = this.db.prepare('INSERT OR IGNORE INTO media_releases VALUES(?,?)');
+    const map = this.db.prepare('INSERT INTO media_releases(media,hash,verified) VALUES(?,?,?) ON CONFLICT(media,hash) DO UPDATE SET verified=MAX(media_releases.verified,excluded.verified)');
     let added = 0;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const row of rows) {
         if (!/^[a-f0-9]{40}$/i.test(row.hash || '') || !row.title) continue;
         release.run(row.hash.toLowerCase(), row.title, Math.max(0,Math.floor(Number(row.size)||0)), source, Date.now());
-        for (const media of row.media || []) map.run(media,row.hash.toLowerCase());
+        for (const media of row.media || []) map.run(media,row.hash.toLowerCase(),row.mediaTrusted===false?0:1);
         added++;
       }
       this.db.exec('COMMIT');
@@ -30,8 +31,9 @@ export class ReleaseIndex {
     return added;
   }
 
-  search(media, title, limit = 500) {
-    const exact = this.db.prepare('SELECT r.* FROM releases r JOIN media_releases m ON r.hash=m.hash WHERE m.media=? LIMIT ?').all(media,limit);
+  search(media, title, limit = 500, {titleFallback = true} = {}) {
+    const exact = this.db.prepare('SELECT r.*,m.verified AS mediaMatched FROM releases r JOIN media_releases m ON r.hash=m.hash WHERE m.media=? LIMIT ?').all(media,limit);
+    if(!titleFallback)return exact;
     // Fallback index lookup, never a call to Torrentio/Comet or TorBox's retired search service.
     const tokens = title.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
     if (!tokens.length) return exact;

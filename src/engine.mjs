@@ -3,6 +3,7 @@ import {parseRequest,Catalog} from './catalog.mjs';
 import {MetadataSeed} from './seed.mjs';
 import {selectFile,TorBoxError} from './torbox.mjs';
 import {parsedStream,filterAndSort,formatter} from './format.mjs';
+import {HashDiscovery,normalizeTitle} from './discovery.mjs';
 
 export class DirectEngine {
   // libraryIndex holds this account's own TorBox items. Hosted mode gives every
@@ -10,6 +11,7 @@ export class DirectEngine {
   constructor({index,libraryIndex=index,torbox,userData,signingKey,fetchImpl=fetch,tmdbKey}) {
     this.index=index;this.libraryIndex=libraryIndex;this.torbox=torbox;this.userData=userData;this.signingKey=signingKey;
     this.catalog=new Catalog(index,{fetchImpl,tmdbKey});this.seed=new MetadataSeed(index,{fetchImpl});
+    this.discovery=new HashDiscovery(index,{fetchImpl});
     this.cache=new Map();this.inflight=new Map();
   }
   sign(payload) {
@@ -43,21 +45,33 @@ export class DirectEngine {
     const start=performance.now();
     request=await this.catalog.resolve(request);
     const metadataPending=this.catalog.metadata(request);
-    const seedPending=request.id.startsWith('tt')?this.seed.candidates(request,{imdb:request.id,title:''}):metadataPending.then(meta=>this.seed.candidates(request,meta));
-    const [metadata,seed,library]=await Promise.allSettled([metadataPending,seedPending,this.refreshLibrary()]);
+    const seedPending=metadataPending.then(meta=>this.seed.candidates(request,meta));
+    const discoveryPending=metadataPending.then(meta=>this.discovery.candidates(request,meta));
+    const [metadata,seed,library,discovery]=await Promise.allSettled([metadataPending,seedPending,this.refreshLibrary(),discoveryPending]);
     if(metadata.status==='rejected')throw metadata.reason;
     const meta=metadata.value;
+    request.anime||=meta.anime;
     const catalogMs=performance.now()-start;
     let then=performance.now();
-    let rows=this.index.search(request.key,meta.title);
-    if(this.libraryIndex!==this.index)rows=[...new Map([...rows,...this.libraryIndex.search(request.key,meta.title)].map(row=>[row.hash,row])).values()];
-    if(!rows.length&&seed.status==='rejected')throw seed.reason;
+    let rows=this.index.search(request.key,meta.title,2500,{titleFallback:this.libraryIndex===this.index});
+    if(this.libraryIndex!==this.index)rows=[...new Map([...this.libraryIndex.search(request.key,meta.title),...rows].map(row=>[row.hash,row])).values()];
+    const candidates=new Map(rows.map(row=>[row.hash,row]));
+    const titleWords=normalizeTitle(meta.title).split(' ');
+    for(const item of this.libraryFiles||[]){
+      if(!titleWords.every(word=>item.words.has(word)))continue;
+      const prior=candidates.get(item.hash);
+      candidates.set(item.hash,{...prior,hash:item.hash,title:item.title,size:item.size,source:'torbox-library-files',mediaMatched:prior?.mediaMatched||false});
+    }
+    rows=[...candidates.values()];
+    if(!rows.length&&seed.status==='rejected'&&discovery.status==='rejected')throw seed.reason;
     const source=seed.status==='fulfilled'?seed.value.source:'existing-index';const indexMs=performance.now()-then;
     then=performance.now();const cached=await this.torbox.checkCached(rows.map(x=>x.hash));const torboxMs=performance.now()-then;
     const matched=[];
     for(const release of rows) {
       const item=cached.get(release.hash);if(!item)continue;
-      const file=selectFile(item.files,{...request,title:meta.title});if(!file)continue;
+      const previousSeasons=Object.entries(meta.seasonEpisodes||{}).filter(([season])=>Number(season)<request.season);
+      const absoluteEpisode=request.anime&&(request.season===1||previousSeasons.length===request.season-1)?previousSeasons.reduce((sum,[,count])=>sum+count,request.episode):undefined;
+      const file=selectFile(item.files,{...request,title:meta.title,folderName:release.title,absoluteEpisode});if(!file)continue;
       const stream=parsedStream(release,item,file,request);
       stream.library=this.ownedHashes?.has(release.hash)||false;
       matched.push(stream);
@@ -70,9 +84,9 @@ export class DirectEngine {
     const streams=await Promise.all(unique.map(async s=>{
       const rendered=await fmt.format(s);
       const token=this.sign({h:s._release.hash,f:s._file.id,n:s._file.short_name||s._file.name,s:s._file.size,exp:Date.now()+24*3600000});
-      return {...rendered,url:publicBase+'/play/'+token,behaviorHints:{filename:s.filename,videoSize:s.size,folderSize:s.folderSize,service:'torbox',cached:true,bingeGroup:`torbox-direct|${s.parsedFile.resolution}|${s.parsedFile.quality}`}};
+      return {...rendered,url:publicBase+'/play/'+token,behaviorHints:{filename:s.filename,videoSize:s.size,folderSize:s.folderSize,service:'torbox',cached:true,notWebReady:!/^.*\.mp4$/i.test(s.filename)||/hevc|h\.?265|av1/i.test(s.parsedFile.encode||'')||s.parsedFile.visualTags.some(t=>/DV|HDR/.test(t)),bingeGroup:`torbox-direct|${s.parsedFile.resolution}|${s.parsedFile.quality}`}};
     }));
-    const value={streams,metrics:{totalMs:Math.round(performance.now()-start),catalogMs:Math.round(catalogMs),indexMs:Math.round(indexMs),torboxMs:Math.round(torboxMs),cache:source,candidates:rows.length,cached:cached.size,matched:matched.length,returned:streams.length}};
+    const value={streams,metrics:{totalMs:Math.round(performance.now()-start),catalogMs:Math.round(catalogMs),indexMs:Math.round(indexMs),torboxMs:Math.round(torboxMs),cache:source,hashIndex:discovery.status==='fulfilled'?discovery.value.source:'unavailable',candidates:rows.length,cached:cached.size,matched:matched.length,returned:streams.length}};
     return value;
   }
   async refreshLibrary() {
@@ -80,6 +94,10 @@ export class DirectEngine {
     if(this.libraryPending)return this.libraryPending;
     this.libraryPending=this.torbox.listOwned().then(items=>{
       this.ownedHashes=new Set(items.map(x=>x.hash?.toLowerCase()).filter(Boolean));
+      this.libraryFiles=items.flatMap(item=>(item.files||[]).filter(file=>/\.(mkv|mp4|m4v|avi|webm|mov|m2ts|ts)$/i.test(file.name||'')&&!/(?:^|[ /\\._-])(sample|trailer|featurette)(?:[ /\\._-]|$)/i.test(file.name)).map(file=>{
+        const title=(file.short_name||file.name).split(/[\\/]/).pop();
+        return {hash:String(item.hash||'').toLowerCase(),title,size:item.size,words:new Set(normalizeTitle(title).split(' '))};
+      })).filter(item=>/^[a-f0-9]{40}$/i.test(item.hash||''));
       this.libraryIndex.import(items.filter(x=>x.hash&&x.name).map(x=>({hash:x.hash,title:x.name,size:x.size})),'torbox-library');
       this.libraryAt=Date.now();
     }).finally(()=>this.libraryPending=null);

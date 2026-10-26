@@ -14,6 +14,8 @@ test('HTTP addon uses metadata plus TorBox only and warm requests do no upstream
   const u=new URL(url);calls.push({host:u.hostname,path:u.pathname,method:options.method||'GET'});
   let data;
   if(u.hostname==='v3-cinemeta.strem.io')data={meta:{name:'Example',releaseInfo:'2026'}};
+  else if(u.hostname==='api.knaben.org'){assert.equal(options.headers?.Authorization,undefined);data={hits:[]};}
+  else if(u.hostname==='stremthru.13377001.xyz'){assert.equal(options.headers?.Authorization,undefined);data={channel:{items:[]}};}
   else if(u.hostname==='zileanfortheweebs.midnightignite.me'){
    assert.ok(!options.headers?.Authorization,'no TorBox credential reaches metadata seed');
    data=u.searchParams.get('Resolution')==='2160p'?[{info_hash:hash,raw_title:file.name,imdb_id:'tt123',size:file.size}]:[];
@@ -32,7 +34,7 @@ test('HTTP addon uses metadata plus TorBox only and warm requests do no upstream
   const blocked=await fetch(base+'/fallback/stream/movie/tt123.json');assert.equal(blocked.status,400);assert.equal(calls.length,0,'fallback must refuse IMDb requests before any upstream call');
   const a=await fetch(base+'/stream/movie/tt123.json');const body=await a.json();assert.equal(a.status,200);assert.equal(body.streams[0].name,'𝟜𝕂 𝔻𝕍  ·  𝕀𝕄𝔸𝕏');
   const count=calls.length;await fetch(base+'/stream/movie/tt123.json');assert.equal(calls.length,count);
-  assert.ok(calls.every(c=>['api.torbox.app','v3-cinemeta.strem.io','zileanfortheweebs.midnightignite.me'].includes(c.host)));
+  assert.ok(calls.every(c=>['api.torbox.app','v3-cinemeta.strem.io','zileanfortheweebs.midnightignite.me','api.knaben.org','stremthru.13377001.xyz'].includes(c.host)));
   const token=body.streams[0].url.split('/play/')[1];const r=await fetch(base+'/play/'+token,{redirect:'manual'});assert.equal(r.status,307);assert.match(r.headers.get('location'),/^https:\/\/nexus-test/);assert.ok(!calls.some(c=>c.path.includes('createtorrent')));
  }finally{server.close();await once(server,'close');index.close();}
 });

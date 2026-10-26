@@ -13,12 +13,17 @@ export function parsedStream(release,cached,file,request) {
   if (hdr.some(x=>/dv|dolby.?vision/i.test(x))) visualTags.push(hdr.some(x=>/^hdr/i.test(x))?'HDR+DV':'DV');
   for (const tag of hdr) if (/^HDR(?:10\+?)?$/i.test(tag)) visualTags.push(tag.toUpperCase());
   if (/\bIMAX\b/i.test(release.title+' '+filename)) visualTags.push('IMAX');
+  const fullName=release.title+' '+filename;
+  if(folder.threeD||parsed.threeD||/\b3D\b|\b(?:FULL|HALF)[ ._-]*SBS\b/i.test(fullName))visualTags.push('3D');
+  // IMAX Enhanced is a distribution format, not evidence of an AI upscale.
+  if(/\bupscal(?:ed|e|ing)\b/i.test(fullName.replace(/\bIMAX[ ._-]+Enhanced\b/gi,'IMAX')))visualTags.push('Upscaled');
+  if(/\bAI[ ._-]*(?:upscal|enhanc|remaster)/i.test(fullName))visualTags.push('AI');
   const languages=[...new Set([...(parsed.languages||[]),...(folder.languages||[])].map(x=>languageNames[String(x).toLowerCase()]||x))];
   return {
     id:`${release.hash}:${file.id}`,type:'debrid',filename,folderName:release.title,size:Number(file.size),folderSize:Number(cached.size)||release.size,
     library:false,service:{id:'torbox',cached:true},addon:{name:'TorBox Direct',preset:{type:'custom'},manifest:{id:'local.torbox.direct'}},torrent:{infoHash:release.hash},
     parsedFile:{title:parsed.title||folder.title,year:parsed.year||folder.year,resolution:resolutionNames[parsed.resolution||folder.resolution]||parsed.resolution||folder.resolution||'Unknown',quality:parsed.quality||folder.quality||'Unknown',visualTags:[...new Set(visualTags)],audioTags:parsed.audio||folder.audio||[],audioChannels:parsed.channels||folder.channels||[],languages:languages.length?languages:['Unknown'],releaseGroup:(parsed.group||folder.group||'').length>1?(parsed.group||folder.group):undefined,encode:parsed.codec||folder.codec,seasons:request.season===undefined?[]:[request.season],episodes:request.episode===undefined?[]:[request.episode],editions:[...new Set([...(folder.editions||[]),...(parsed.editions||[])])] },
-    _release:release,_cached:cached,_file:file,
+    _release:release,_cached:cached,_file:file,_titles:[folder.title,parsed.title].filter(Boolean),
   };
 }
 
@@ -28,8 +33,14 @@ export function filterAndSort(streams,userData,metadata,request) {
   const titleWords=normalize(metadata.title).split(' ');
   streams=streams.filter(s=>{
     const p=s.parsedFile;const combined=normalize(s.folderName+' '+s.filename);
-    if (!titleWords.every(w=>combined.split(' ').includes(w))) return false;
-    if (request.type==='movie' && userData.yearMatching?.enabled && metadata.year && p.year && Number(p.year)!==metadata.year) return false;
+    if(!s._release.mediaMatched){
+      if(userData.titleMatching?.enabled&&userData.titleMatching.mode==='exact'){
+        const title=normalize(metadata.title);
+        const latin=s=>normalize(s.replace(/[^\p{Script=Latin}\p{N}\s]/gu,' '));
+        if(!s._titles.some(t=>normalize(t)===title||(latin(metadata.title)===title&&latin(t)===title)))return false;
+      }else if(!titleWords.every(w=>combined.split(' ').includes(w)))return false;
+      if((request.type==='movie'||request.season===1)&&userData.yearMatching?.enabled&&metadata.year&&p.year&&Number(p.year)!==metadata.year)return false;
+    }
     if (userData.excludedQualities?.includes(p.quality) || userData.excludedResolutions?.includes(p.resolution)) return false;
     if (userData.excludedKeywords?.some(k=>combined.split(' ').includes(k.toLowerCase()))) return false;
     if (userData.excludedVisualTags?.some(t=>p.visualTags.includes(t))) return false;

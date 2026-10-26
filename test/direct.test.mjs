@@ -59,3 +59,35 @@ test('current preferences rank IMAX and DV ahead of ordinary 4K',()=>{
  const rows=[make('Example.2026.2160p.BluRay.REMUX'),make('Example.2026.IMAX.2160p.BluRay.REMUX.DV.HDR')];
  const ordered=filterAndSort(rows,prefs,{title:'Example',year:2026},{type:'movie'});assert.match(ordered[0].folderName,/IMAX/);
 });
+
+test('shared-index requests cannot borrow a similarly named title from another media ID',()=>{
+ const index=new ReleaseIndex();
+ try{
+  index.import([{hash,title:'Up.In.The.Air.2009.2160p.BluRay.REMUX',media:['movie:tt1193138']}],'fixture');
+  assert.equal(index.search('movie:tt1049413','Up',500,{titleFallback:false}).length,0);
+  const make=title=>parsedStream({hash,title,size:100},{size:100},{id:0,name:title+'.mkv',size:100},{type:'movie'});
+  assert.equal(filterAndSort([make('Up.In.The.Air.2009.2160p.BluRay.REMUX')],prefs,{title:'Up',year:2009},{type:'movie'}).length,0);
+  assert.equal(filterAndSort([make('Up.2009.2160p.BluRay.REMUX')],prefs,{title:'Up',year:2009},{type:'movie'}).length,1);
+  assert.equal(filterAndSort([make('The.Office.UK.2001.S01E01.1080p.WEB-DL')],prefs,{title:'The Office',year:2005},{type:'series',season:1}).length,0);
+ }finally{index.close();}
+});
+
+test('an exact IMDb association survives a catalog release-year discrepancy',()=>{
+ const release={hash,title:'Seven.Samurai.1954.2160p.BluRay.REMUX',size:100,mediaMatched:true};
+ const stream=parsedStream(release,{size:100},{id:0,name:release.title+'.mkv',size:100},{type:'movie'});
+ assert.equal(filterAndSort([stream],prefs,{title:'Seven Samurai',year:1956},{type:'movie'}).length,1);
+ stream._release={...release,mediaMatched:false};
+ assert.equal(filterAndSort([stream],prefs,{title:'Seven Samurai',year:1956},{type:'movie'}).length,0);
+});
+
+test('AI upscaled and 3D releases obey the visual-tag exclusions',()=>{
+ const profile={excludedVisualTags:['3D','AI','Upscaled']};
+ for(const title of ['Example.2026.2160p.AI.Upscale','Example.2026.1080p.3D.FULL-SBS','Example.2026.Upscaled.4K']){
+  const s=parsedStream({hash,title,size:100},{size:100},{id:0,name:title+'.mkv',size:100},{type:'movie'});
+  assert.equal(filterAndSort([s],profile,{title:'Example',year:2026},{type:'movie'}).length,0,title);
+ }
+ const title='Example (2026) {edition-IMAX} [IMAX Enhanced][WEBDL-2160p][DV HDR10][HEVC]-SiC';
+ const legitimate=parsedStream({hash,title,size:100},{size:100},{id:0,name:title+'.mkv',size:100},{type:'movie'});
+ assert.ok(!legitimate.parsedFile.visualTags.includes('Upscaled'));
+ assert.equal(filterAndSort([legitimate],profile,{title:'Example',year:2026},{type:'movie'}).length,1);
+});

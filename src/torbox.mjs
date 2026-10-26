@@ -1,3 +1,4 @@
+import {parseTorrentTitle} from '@viren070/parse-torrent-title';
 const HASH = /^[a-f0-9]{40}$/i;
 
 export class TorBoxError extends Error {
@@ -19,7 +20,7 @@ export class TorBox {
     this.inflight = new Map();
   }
 
-  async request(path, { method = 'GET', body, query = {} } = {}) {
+  async request(path, { method = 'GET', body, query = {}, timeoutMs = 30000 } = {}) {
     const url = new URL(this.baseUrl + path);
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
     let response;
@@ -28,7 +29,7 @@ export class TorBox {
         method,
         headers: { Authorization: `Bearer ${this.apiKey}`, 'User-Agent': 'TorBoxDirect/0.1', ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined,
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: 'error',
       });
     } catch {
@@ -51,16 +52,23 @@ export class TorBox {
     hashes = [...new Set(hashes.map(h => String(h).toLowerCase()))];
     if (hashes.some(h => !HASH.test(h))) throw new TorBoxError('BAD_HASH', 'Invalid torrent hash', 400);
     const found = new Map();
-    for (let offset = 0; offset < hashes.length; offset += 500) {
-      const chunk = hashes.slice(offset, offset + 500);
-      const data = await this.request('/torrents/checkcached', {
-        method: 'POST', body: { hashes: chunk }, query: { format: 'object', list_files: true },
-      });
-      for (const [key, item] of Object.entries(data || {})) {
-        const hash = (item?.hash || key).toLowerCase();
-        if (chunk.includes(hash) && item && typeof item === 'object' && Array.isArray(item.files) && item.files.length) found.set(hash, item);
+    const chunks=[];for(let offset=0;offset<hashes.length;offset+=500)chunks.push(hashes.slice(offset,offset+500));
+    let succeeded=0,failure;
+    for(let offset=0;offset<chunks.length;offset+=2){
+      const results=await Promise.allSettled(chunks.slice(offset,offset+2).map(async chunk=>({chunk,data:await this.request('/torrents/checkcached',{method:'POST',body:{hashes:chunk},query:{format:'object',list_files:true},timeoutMs:12000})})));
+      for(const result of results){
+        if(result.status==='rejected'){
+          if(['BAD_TOKEN','AUTH_ERROR','NO_AUTH'].includes(result.reason.code))throw result.reason;
+          failure=result.reason;continue;
+        }
+        succeeded++;const {chunk,data}=result.value;
+        for (const [key, item] of Object.entries(data || {})) {
+          const hash = (item?.hash || key).toLowerCase();
+          if (chunk.includes(hash) && item && typeof item === 'object' && Array.isArray(item.files) && item.files.length) found.set(hash, item);
+        }
       }
     }
+    if(failure&&!succeeded)throw failure;
     return found;
   }
 
@@ -125,7 +133,7 @@ export class TorBox {
   }
 }
 
-export function selectFile(files, { season, episode, title } = {}) {
+export function selectFile(files, { season, episode, title, anime, absoluteEpisode, folderName } = {}) {
   const videos = files.filter(f => Number.isInteger(f.id) && /\.(mkv|mp4|m4v|avi|webm|mov|m2ts|ts)$/i.test(f.name || '') && !/(?:^|[ /\\._-])(sample|trailer|featurette)(?:[ /\\._-]|$)/i.test(f.name));
   if (season !== undefined && episode !== undefined) {
     const matched = videos.filter(f => {
@@ -133,14 +141,19 @@ export function selectFile(files, { season, episode, title } = {}) {
       const explicit = [...name.matchAll(/S(\d{1,2})E(\d{1,3})(?!\d)/gi)];
       if (explicit.length) return explicit.some(m => Number(m[1]) === season && Number(m[2]) === episode);
       const alternate = name.match(/(?:^|[^\d])(\d{1,2})x(\d{2,3})(?!\d)/i);
-      return alternate ? Number(alternate[1]) === season && Number(alternate[2]) === episode : false;
+      if(alternate)return Number(alternate[1])===season&&Number(alternate[2])===episode;
+      if(!anime||!Number.isInteger(absoluteEpisode))return false;
+      const parsed=parseTorrentTitle((f.short_name||name).split(/[\\/]/).pop());
+      const folder=parseTorrentTitle(folderName||'');
+      if(folder.seasons?.length&&!folder.seasons.includes(season))return false;
+      const target=folder.seasons?.length?episode:absoluteEpisode;
+      return !parsed.seasons?.length&&parsed.episodes?.length===1&&parsed.episodes[0]===target;
     });
     return matched.sort((a,b) => b.size - a.size)[0] || null;
   }
   if(videos.length>1&&title){
     const normalize=s=>s.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-    const words=normalize(title).split(' ');
-    const specific=videos.filter(f=>{const name=normalize(f.short_name||f.name.split(/[\\/]/).pop());return words.every(w=>name.split(' ').includes(w));});
+    const specific=videos.filter(f=>normalize(parseTorrentTitle(f.short_name||f.name.split(/[\\/]/).pop()).title||'')===normalize(title));
     return specific.sort((a,b)=>b.size-a.size)[0]||null;
   }
   return videos.sort((a,b) => b.size - a.size)[0] || null;

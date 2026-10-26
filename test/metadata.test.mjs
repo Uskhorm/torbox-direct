@@ -24,6 +24,7 @@ test('anime ID conversion maps the exact cour episode without anime torrent scra
   const cour=await catalog.resolve(parseRequest('series','mal:38524:1'));assert.equal(cour.id,'tt2560140');assert.equal(cour.season,3);assert.equal(cour.episode,13);
   await assert.rejects(()=>catalog.resolve(parseRequest('series','kitsu:9999999999:1')),{code:'ID_NOT_MAPPED'});
   await assert.rejects(()=>catalog.resolve(parseRequest('series','mal:38524:2:1')),{code:'UNSUPPORTED_ID'});
+  const inferno=await catalog.resolve(parseRequest('series','mal:16774:1'));assert.equal(inferno.id,'tt3498252');assert.equal(inferno.season,1);assert.equal(inferno.episode,1);
 });
 
 test('a release-index outage does not discard cached releases already known in the account',async()=>{
@@ -36,4 +37,21 @@ test('a release-index outage does not discard cached releases already known in t
   }});
   try{const result=await engine.search('movie','tt123','https://fixture.example/private');assert.equal(result.streams.length,1);assert.equal(result.metrics.cache,'existing-index');}
   finally{index.close();libraryIndex.close();}
+});
+
+test('TMDB catalog IDs resolve without a second user key and remain distinct for movies and series',async()=>{
+ const index=new ReleaseIndex(),calls=[];
+ const catalog=new Catalog(index,{fetchImpl:async url=>{
+  const u=new URL(url);calls.push(u);
+  if(u.hostname==='query.wikidata.org'){
+   const id=u.searchParams.get('query').includes('P4947')?'tt123':'tt456';
+   return new Response(JSON.stringify({results:{bindings:[{imdb:{value:id}}]}}));
+  }
+  return new Response(JSON.stringify({meta:{name:'Example',releaseInfo:'2026'}}));
+ }});
+ try{
+  assert.equal((await catalog.metadata(parseRequest('movie','tmdb:123'))).imdb,'tt123');
+  assert.equal((await catalog.metadata(parseRequest('series','tmdb:123:1:1'))).imdb,'tt456');
+  assert.equal(calls.filter(x=>x.hostname==='query.wikidata.org').length,2);
+ }finally{index.close();}
 });

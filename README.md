@@ -4,7 +4,7 @@ A Stremio and Nuvio stream addon that lists **TorBox-cached** releases for whate
 
 ```text
 catalog ID (tt… / tmdb:…)
-  → ID-to-hash lookup (Zilean/DMM release index, plus your own TorBox library)
+  → ID-to-hash lookup (Zilean/DMM, Knaben, raw Torz metadata, your own TorBox files)
   → one batched TorBox cache check
   → the exact cached video file (right episode inside season packs)
   → filter, rank and format
@@ -16,14 +16,14 @@ play
   → TorBox CDN
 ```
 
-Only cached releases are listed, including ones that are not in your library yet. The ID-to-hash lookup is the search stage performed by addons such as Comet; TorBox's cache API then returns the actual cached filenames for those hashes. This addon implements that stage itself and does not call Torrentio, Comet, Nyaa or AnimeTosho. It does depend on the public Zilean/DMM release index for titles not already indexed locally. It does not claim to search TorBox's complete cache by title or IMDb ID.
+Only cached releases are listed, including ones that are not in your library yet. The ID-to-hash lookup is the search stage performed by addons such as Comet; TorBox's cache API then returns the actual cached filenames for those hashes. This addon implements that stage itself. Discovery combines Zilean/DMM, Knaben's raw hash database, the public Torz Torznab metadata index, and individual files in the user's own TorBox collections. It never calls the Torrentio, Comet, Nyaa or AnimeTosho websites/addons. The Torz endpoint supplies only public hash metadata; its Stremio addon, debrid/store API and playback resolver are not used, and it never receives a TorBox key. It does not claim to search TorBox's complete cache by title or IMDb ID.
 
-MAL, Kitsu, AniList and AniDB IDs are converted to IMDb/season/episode using a bundled metadata crosswalk from [Fribb/anime-lists](https://github.com/Fribb/anime-lists). They then use the same search route as other titles. No separate anime torrent scraper is used. Ambiguous mappings fail instead of guessing an episode. Refresh the factual ID crosswalk with `node scripts/refresh-anime-ids.mjs`.
+MAL, Kitsu, AniList and AniDB IDs are converted to IMDb/season/episode using a bundled metadata crosswalk from [Fribb/anime-lists](https://github.com/Fribb/anime-lists) and the [Kitsu addon metadata mappings](https://github.com/TheBeastLT/stremio-kitsu-anime). They then use the same search route as other titles. Anime episodes with bare numbers are matched using the canonical episode mapping rather than a largest-file fallback. Ambiguous mappings fail instead of guessing. Refresh the factual ID crosswalk with `node scripts/refresh-anime-ids.mjs`.
 
 ## Use it
 
 1. Open the configure page of an instance, for example `https://nuvio-torbox-direct.vercel.app/configure`.
-2. Paste your own TorBox API key (and, optionally, a TMDB key if your catalogs use `tmdb:` IDs).
+2. Paste your own TorBox API key. A TMDB key is optional: the addon also maps TMDB IDs through cached metadata and Wikidata.
 3. Copy the private manifest URL into Nuvio or Stremio. The same URL works on TV, tablet and desktop.
 
 ## Privacy and security model
@@ -72,8 +72,8 @@ Only preference keys are copied; credentials and service settings are ignored.
 
 ## Limits
 
-- Coverage depends on the public release index plus your library. The documented TorBox Voyager search hostname did not resolve during verification. The main cache API takes torrent hashes, not media IDs. See [request trace](docs/request-trace.md).
-- Supports IMDb (`tt…`), TMDB with an optional TMDB key, and unambiguously mapped MAL/Kitsu/AniList/AniDB IDs. Coverage for anime depends on the same general release index and the available season/episode mappings.
+- Coverage depends on the available metadata indexes and your library. The documented TorBox Voyager search hostname did not resolve during verification. The main cache API takes torrent hashes, not media IDs. See [request trace](docs/request-trace.md).
+- Supports IMDb (`tt…`), TMDB via cached/Wikidata mappings or an optional TMDB key, and unambiguously mapped MAL/Kitsu/AniList/AniDB IDs. Coverage can still differ from other addons and is not guaranteed for every release.
 - The hosted adapter supports the profile's basic resolution, quality, visual-tag, language and keyword filters/sorting and uses the original AIOStreams formatter. Advanced SEL, SeaDex and bitrate ranking are not implemented.
 - Hosted warm caches are instance-local and can reset on a cold start; a fast warm request is not a guarantee of cold-request latency.
 - Response lists are capped at 60 streams.

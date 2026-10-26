@@ -19,6 +19,8 @@ function upstream(calls) {
     calls.push({host:u.hostname,path:u.pathname,auth,method:options.method||'GET',query:u.search});
     const ok=data=>new Response(JSON.stringify({success:true,data}),{headers:{'Content-Type':'application/json'}});
     if(u.hostname==='v3-cinemeta.strem.io')return new Response(JSON.stringify({meta:{name:'Example',releaseInfo:'2026'}}));
+    if(u.hostname==='api.knaben.org'){assert.equal(auth,undefined);return new Response(JSON.stringify({hits:[]}));}
+    if(u.hostname==='stremthru.13377001.xyz'){assert.equal(auth,undefined);return new Response(JSON.stringify({channel:{items:[]}}));}
     if(u.hostname==='zileanfortheweebs.midnightignite.me') {
       assert.equal(auth,undefined,'no TorBox credential reaches the metadata seed');
       return new Response(JSON.stringify(u.searchParams.get('Resolution')==='2160p'?[{info_hash:shared,raw_title:file.name,imdb_id:'tt123',size:file.size}]:[]));
