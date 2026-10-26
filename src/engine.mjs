@@ -28,29 +28,39 @@ export class DirectEngine {
     return payload;
   }
   async search(type,id,publicBase) {
-    const request=parseRequest(type,id);const key=request.key;
+    const request=parseRequest(type,id);const key=request.key+'\0'+publicBase;
     const previous=this.cache.get(key);
     if(previous&&Date.now()-previous.at<20000) return {...previous.value,metrics:{...previous.value.metrics,totalMs:0,cache:'response'}};
     if(this.inflight.has(key)) return this.inflight.get(key);
-    const pending=this._search(request,publicBase).finally(()=>this.inflight.delete(key));
+    const pending=this._search(request,publicBase).then(value=>{
+      this.cache.set(key,{at:Date.now(),value});
+      if(this.cache.size>128)this.cache.delete(this.cache.keys().next().value);
+      return value;
+    }).finally(()=>this.inflight.delete(key));
     this.inflight.set(key,pending);return pending;
   }
   async _search(request,publicBase) {
     const start=performance.now();
+    request=await this.catalog.resolve(request);
     const metadataPending=this.catalog.metadata(request);
     const seedPending=request.id.startsWith('tt')?this.seed.candidates(request,{imdb:request.id,title:''}):metadataPending.then(meta=>this.seed.candidates(request,meta));
-    const [meta,seeded]=await Promise.all([metadataPending,seedPending,this.refreshLibrary()]);
+    const [metadata,seed,library]=await Promise.allSettled([metadataPending,seedPending,this.refreshLibrary()]);
+    if(metadata.status==='rejected')throw metadata.reason;
+    const meta=metadata.value;
     const catalogMs=performance.now()-start;
     let then=performance.now();
     let rows=this.index.search(request.key,meta.title);
     if(this.libraryIndex!==this.index)rows=[...new Map([...rows,...this.libraryIndex.search(request.key,meta.title)].map(row=>[row.hash,row])).values()];
-    const source=seeded.source;const indexMs=performance.now()-then;
+    if(!rows.length&&seed.status==='rejected')throw seed.reason;
+    const source=seed.status==='fulfilled'?seed.value.source:'existing-index';const indexMs=performance.now()-then;
     then=performance.now();const cached=await this.torbox.checkCached(rows.map(x=>x.hash));const torboxMs=performance.now()-then;
     const matched=[];
     for(const release of rows) {
       const item=cached.get(release.hash);if(!item)continue;
       const file=selectFile(item.files,{...request,title:meta.title});if(!file)continue;
-      matched.push(parsedStream(release,item,file,request));
+      const stream=parsedStream(release,item,file,request);
+      stream.library=this.ownedHashes?.has(release.hash)||false;
+      matched.push(stream);
     }
     const ranked=filterAndSort(matched,this.userData,meta,request);
     // Deduplicate the actual selected file, preserving distinct remuxes/editions.
@@ -63,12 +73,13 @@ export class DirectEngine {
       return {...rendered,url:publicBase+'/play/'+token,behaviorHints:{filename:s.filename,videoSize:s.size,folderSize:s.folderSize,service:'torbox',cached:true,bingeGroup:`torbox-direct|${s.parsedFile.resolution}|${s.parsedFile.quality}`}};
     }));
     const value={streams,metrics:{totalMs:Math.round(performance.now()-start),catalogMs:Math.round(catalogMs),indexMs:Math.round(indexMs),torboxMs:Math.round(torboxMs),cache:source,candidates:rows.length,cached:cached.size,matched:matched.length,returned:streams.length}};
-    this.cache.set(request.key,{at:Date.now(),value});return value;
+    return value;
   }
   async refreshLibrary() {
     if(this.libraryAt&&Date.now()-this.libraryAt<60000)return;
     if(this.libraryPending)return this.libraryPending;
     this.libraryPending=this.torbox.listOwned().then(items=>{
+      this.ownedHashes=new Set(items.map(x=>x.hash?.toLowerCase()).filter(Boolean));
       this.libraryIndex.import(items.filter(x=>x.hash&&x.name).map(x=>({hash:x.hash,title:x.name,size:x.size})),'torbox-library');
       this.libraryAt=Date.now();
     }).finally(()=>this.libraryPending=null);

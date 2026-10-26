@@ -39,6 +39,9 @@ export function configurationCipher(secret) {
         return validateConfiguration(JSON.parse(Buffer.concat([cipher.update(bytes.subarray(28)),cipher.final()]).toString('utf8')));
       }catch{throw new ConfigurationError('INVALID_CONFIGURATION_LINK','This configuration link is invalid.',404);}
     },
-    signingKey:token=>createHmac('sha256',key).update('playback\0'+token).digest('base64url'),
+    // One id per TorBox account, so re-generating links cannot fan one account out
+    // into many engines; play links stay valid across that account's own links only.
+    accountId:config=>createHmac('sha256',key).update('account\0'+config.apiKey+'\0'+(config.tmdbKey||'')).digest('base64url'),
+    signingKey:accountId=>createHmac('sha256',key).update('playback\0'+accountId).digest('base64url'),
   };
 }

@@ -64,7 +64,10 @@ test('hosted addon: blank page, per-account encrypted links, isolated libraries,
     const baseA=linkA.replace(/\/manifest\.json$/,''),baseB=linkB.replace(/\/manifest\.json$/,'');
 
     const manifestA=await (await fetch(linkA)).json();
-    assert.equal(manifestA.behaviorHints.configurationRequired,false);assert.deepEqual(manifestA.resources[0].idPrefixes,['tt']);
+    assert.equal(manifestA.behaviorHints.configurationRequired,false);assert.ok(manifestA.resources[0].idPrefixes.includes('tt'));assert.ok(manifestA.resources[0].idPrefixes.includes('kitsu:'));
+    const logo=await fetch(manifestA.logo);assert.equal(logo.status,200);assert.equal(logo.headers.get('content-type'),'image/png');
+    assert.equal(Buffer.from(await logo.arrayBuffer()).subarray(0,8).toString('hex'),'89504e470d0a1a0a');
+    for(const path of ['/src/hosted.mjs','/deployment/preferences.json','/data/hosted-secret.private.json','/.vercel/project.json'])assert.equal((await fetch(base+path)).status,404);
     const tampered=baseA.slice(0,-4)+(baseA.endsWith('AAAA')?'BBBB':'AAAA');
     assert.equal((await fetch(tampered+'/manifest.json')).status,404);
 
@@ -78,15 +81,36 @@ test('hosted addon: blank page, per-account encrypted links, isolated libraries,
     assert.deepEqual([...torboxAuth].sort(),[`Bearer ${BAD_KEY}`,`Bearer ${KEY_A}`,`Bearer ${KEY_B}`].sort());
 
     const tokenA=streamsA[0].url.split('/play/')[1];
+    const beforeProbe=calls.length;
+    assert.equal((await fetch(baseA+'/play/'+tokenA,{method:'HEAD',redirect:'manual'})).status,204);
+    assert.equal(calls.length,beforeProbe,'HEAD playback probes perform no upstream work');
+    const linkA2=(await (await configure(KEY_A)).json()).manifestUrl;
+    const streamsA2=(await (await fetch(linkA2.replace('/manifest.json','')+'/stream/movie/tt123.json')).json()).streams;
+    assert.ok(streamsA2.every(s=>s.url.startsWith(linkA2.replace('/manifest.json','')+'/play/')),'regenerated links never reuse another install URL from the response cache');
     const played=await fetch(baseA+'/play/'+tokenA,{redirect:'manual'});
     assert.equal(played.status,307);assert.match(played.headers.get('location'),/^https:\/\/nexus-test\.neur\.tb-cdn\.st\//);
     assert.equal((await fetch(baseB+'/play/'+tokenA,{redirect:'manual'})).status,403,'a play link only works under its own account');
     assert.ok(!calls.some(c=>c.path.includes('createtorrent')),'library and owned items never trigger an add');
 
-    const unsupported=await fetch(baseA+'/stream/series/kitsu:1:1.json');
+    const unsupported=await fetch(baseA+'/stream/series/not-an-id.json');
     assert.equal(unsupported.status,200);assert.deepEqual((await unsupported.json()).streams,[]);
 
     const logged=logs.join('\n');
     for(const secret of [KEY_A,KEY_B,BAD_KEY,baseA.split('/').pop(),baseB.split('/').pop()])assert.ok(!logged.includes(secret),'logs never contain keys or links');
   } finally {console.log=log;server.close();await once(server,'close');}
+});
+
+test('configuration validates origin, body size, JSON type and bounds repeated attempts',async()=>{
+  const calls=[];const server=createServer(createHostedHandler({secret:randomBytes(32).toString('base64url'),fetchImpl:upstream(calls)}));
+  server.listen(0,'127.0.0.1');await once(server,'listening');const base=`http://127.0.0.1:${server.address().port}`;
+  const post=(body,headers={})=>fetch(base+'/api/configure',{method:'POST',headers:{'Content-Type':'application/json',...headers},body});
+  try{
+    assert.equal((await post(JSON.stringify({apiKey:KEY_A}),{Origin:'https://wrong.example'})).status,403);
+    assert.equal((await post('{}',{'Content-Type':'text/plain'})).status,415);
+    assert.equal((await post(JSON.stringify({apiKey:KEY_A,extra:'x'.repeat(9000)}))).status,413);
+    assert.equal((await post('{}')).status,400);
+    assert.equal(calls.length,0,'invalid configuration is rejected before TorBox');
+    for(let n=0;n<12;n++)await post('{}');
+    assert.equal((await post('{}')).status,429);
+  }finally{server.close();await once(server,'close');}
 });

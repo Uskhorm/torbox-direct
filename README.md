@@ -4,7 +4,7 @@ A Stremio and Nuvio stream addon that lists **TorBox-cached** releases for whate
 
 ```text
 catalog ID (tt… / tmdb:…)
-  → public release index (Zilean/DMM hashes, plus your own TorBox library)
+  → ID-to-hash lookup (Zilean/DMM release index, plus your own TorBox library)
   → one batched TorBox cache check
   → the exact cached video file (right episode inside season packs)
   → filter, rank and format
@@ -16,7 +16,9 @@ play
   → TorBox CDN
 ```
 
-Only cached releases are listed, including ones that are not in your library yet.
+Only cached releases are listed, including ones that are not in your library yet. The ID-to-hash lookup is the search stage performed by addons such as Comet; TorBox's cache API then returns the actual cached filenames for those hashes. This addon implements that stage itself and does not call Torrentio, Comet, Nyaa or AnimeTosho. It does depend on the public Zilean/DMM release index for titles not already indexed locally. It does not claim to search TorBox's complete cache by title or IMDb ID.
+
+MAL, Kitsu, AniList and AniDB IDs are converted to IMDb/season/episode using a bundled metadata crosswalk from [Fribb/anime-lists](https://github.com/Fribb/anime-lists). They then use the same search route as other titles. No separate anime torrent scraper is used. Ambiguous mappings fail instead of guessing an episode. Refresh the factual ID crosswalk with `node scripts/refresh-anime-ids.mjs`.
 
 ## Use it
 
@@ -28,10 +30,12 @@ Only cached releases are listed, including ones that are not in your library yet
 
 - The configure page starts blank. The server has no default account and stores no user keys.
 - Your key is checked once against TorBox, then sealed with AES-256-GCM into your install URL (`/v1.<token>/manifest.json`). The server holds only the encryption secret (`TORBOX_DIRECT_SECRET`) and decrypts your token in memory while answering your own requests.
-- Keys, install tokens and playback links are never logged.
-- Each install link gets its own TorBox client, response cache and library index, so one account's library never appears in another account's results.
-- Playback links are HMAC-signed per install link, expire after 24 hours, and only work under the install link that produced them.
-- **Treat your install URL like a password.** Anyone holding it can use the addon through your TorBox account, the same as with any addon whose URL carries your debrid key. To revoke all your links, regenerate your TorBox API key.
+- The addon never logs keys, install tokens or playback links.
+- Each TorBox account gets its own TorBox client, response cache and library index, so one account's library never appears in another account's results.
+- Playback links are HMAC-signed per account, expire after 24 hours, and never work under another account's install link.
+- **Treat your install URL like your TorBox API key.** TorBox's download links contain the account's API key (`token=`), so anyone holding your install URL, or a play link from it, can play through your account and read the key from the playback redirect. This is the same exposure as Torrentio/Comet/AIOStreams URLs. To revoke all your links, regenerate your TorBox API key.
+- You trust the instance operator. The server never stores keys, but it decrypts install tokens to serve requests, and platform request logs (e.g. Vercel) record request paths, which contain the encrypted token. Self-host if that matters to you.
+- Static publishing is limited to the `public/` directory; source and credential files are excluded. Link generation is rate limited per IP and account caches are isolated. `HEAD` probes on play links never change the account or request a download link.
 
 ## Self-hosting
 
@@ -68,8 +72,10 @@ Only preference keys are copied; credentials and service settings are ignored.
 
 ## Limits
 
-- Coverage depends on the public release index plus your library. TorBox no longer offers a global search API (`search-api.torbox.app` was retired), so no addon can enumerate everything TorBox has cached.
-- Movie and series requests need IMDb (`tt…`) or, with a TMDB key, `tmdb:` IDs. Other ID schemes (Kitsu, MAL) return no streams.
+- Coverage depends on the public release index plus your library. The documented TorBox Voyager search hostname did not resolve during verification. The main cache API takes torrent hashes, not media IDs. See [request trace](docs/request-trace.md).
+- Supports IMDb (`tt…`), TMDB with an optional TMDB key, and unambiguously mapped MAL/Kitsu/AniList/AniDB IDs. Coverage for anime depends on the same general release index and the available season/episode mappings.
+- The hosted adapter supports the profile's basic resolution, quality, visual-tag, language and keyword filters/sorting and uses the original AIOStreams formatter. Advanced SEL, SeaDex and bitrate ranking are not implemented.
+- Hosted warm caches are instance-local and can reset on a cold start; a fast warm request is not a guarantee of cold-request latency.
 - Response lists are capped at 60 streams.
 
 ## License

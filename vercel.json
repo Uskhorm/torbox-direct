@@ -1,9 +1,22 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "regions": ["lhr1"],
+  "regions": [
+    "lhr1"
+  ],
   "functions": {
-    "api/addon.mjs": { "maxDuration": 60, "includeFiles": "deployment/**" }
+    "api/addon.mjs": {
+      "maxDuration": 60,
+      "includeFiles": "deployment/**"
+    }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/addon?__route=$1" }]
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/addon?__route=$1"
+    }
+  ],
+  "buildCommand": "",
+  "outputDirectory": "public",
+  "installCommand": "npm ci --omit=dev --ignore-scripts"
 }
