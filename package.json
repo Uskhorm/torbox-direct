@@ -1,0 +1,22 @@
+{
+  "name": "torbox-direct",
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node src/serve.mjs",
+    "prepare:hosted": "node scripts/prepare-hosted.mjs",
+    "import:preferences": "node scripts/import-preferences.mjs",
+    "import": "node scripts/import.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@viren070/parse-torrent-title": "^0.9.2",
+    "esbuild": "^0.28.2"
+  },
+  "description": "Stremio/Nuvio addon that finds TorBox-cached streams directly, with AIOStreams-style filtering and formatting",
+  "license": "AGPL-3.0-only",
+  "private": true
+}

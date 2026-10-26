@@ -1,0 +1,252 @@
+{
+  "addonName": "AIOStreams",
+  "excludedResolutions": [],
+  "includedResolutions": [],
+  "requiredResolutions": [],
+  "preferredResolutions": [
+    "2160p",
+    "1440p",
+    "1080p",
+    "720p",
+    "576p",
+    "480p",
+    "360p",
+    "240p",
+    "144p",
+    "Unknown"
+  ],
+  "excludedQualities": [
+    "CAM",
+    "SCR",
+    "TS",
+    "TC"
+  ],
+  "includedQualities": [],
+  "requiredQualities": [],
+  "preferredQualities": [
+    "BluRay REMUX",
+    "BluRay",
+    "WEB-DL",
+    "WEBRip",
+    "HDRip",
+    "HC HD-Rip",
+    "DVDRip",
+    "HDTV",
+    "Unknown"
+  ],
+  "excludedLanguages": [],
+  "includedLanguages": [],
+  "requiredLanguages": [
+    "English",
+    "Original",
+    "Dual Audio",
+    "Multi",
+    "Dubbed",
+    "Unknown"
+  ],
+  "preferredLanguages": [
+    "English",
+    "Original",
+    "Dual Audio",
+    "Multi",
+    "Dubbed",
+    "Unknown"
+  ],
+  "excludedVisualTags": [
+    "3D",
+    "AI",
+    "Upscaled"
+  ],
+  "includedVisualTags": [],
+  "requiredVisualTags": [],
+  "preferredVisualTags": [
+    "HDR+DV",
+    "DV",
+    "HDR10+",
+    "HDR10",
+    "HDR",
+    "IMAX",
+    "10bit"
+  ],
+  "excludedAudioTags": [],
+  "includedAudioTags": [],
+  "requiredAudioTags": [],
+  "preferredAudioTags": [
+    "Atmos",
+    "DD+",
+    "DD"
+  ],
+  "excludedAudioChannels": [],
+  "includedAudioChannels": [],
+  "requiredAudioChannels": [],
+  "preferredAudioChannels": [],
+  "excludedStreamTypes": [
+    "p2p"
+  ],
+  "includedStreamTypes": [],
+  "requiredStreamTypes": [],
+  "preferredStreamTypes": [],
+  "excludedEncodes": [],
+  "includedEncodes": [],
+  "requiredEncodes": [],
+  "preferredEncodes": [
+    "AV1",
+    "HEVC",
+    "AVC",
+    "Unknown"
+  ],
+  "excludedKeywords": [
+    "r00",
+    "iso"
+  ],
+  "preferredKeywords": [
+    "IMAX"
+  ],
+  "sortCriteria": {
+    "global": [
+      {
+        "key": "cached",
+        "direction": "desc"
+      }
+    ],
+    "cached": [
+      {
+        "key": "keyword",
+        "direction": "desc"
+      },
+      {
+        "key": "resolution",
+        "direction": "desc"
+      },
+      {
+        "key": "quality",
+        "direction": "desc"
+      },
+      {
+        "key": "visualTag",
+        "direction": "desc"
+      },
+      {
+        "key": "size",
+        "direction": "desc"
+      },
+      {
+        "key": "bitrate",
+        "direction": "desc"
+      },
+      {
+        "key": "seadex",
+        "direction": "desc"
+      },
+      {
+        "key": "streamExpressionMatched",
+        "direction": "desc"
+      },
+      {
+        "key": "streamExpressionScore",
+        "direction": "desc"
+      },
+      {
+        "key": "language",
+        "direction": "desc"
+      }
+    ],
+    "uncached": [
+      {
+        "key": "keyword",
+        "direction": "desc"
+      },
+      {
+        "key": "resolution",
+        "direction": "desc"
+      },
+      {
+        "key": "quality",
+        "direction": "desc"
+      },
+      {
+        "key": "visualTag",
+        "direction": "desc"
+      },
+      {
+        "key": "size",
+        "direction": "desc"
+      },
+      {
+        "key": "seeders",
+        "direction": "desc"
+      },
+      {
+        "key": "bitrate",
+        "direction": "desc"
+      },
+      {
+        "key": "seadex",
+        "direction": "desc"
+      },
+      {
+        "key": "streamExpressionMatched",
+        "direction": "desc"
+      },
+      {
+        "key": "streamExpressionScore",
+        "direction": "desc"
+      },
+      {
+        "key": "language",
+        "direction": "desc"
+      }
+    ]
+  },
+  "formatter": {
+    "id": "custom",
+    "definitions": {
+      "custom": {
+        "name": "{stream.season::exists[\"𝕊{stream.season::string::translate('0123456789','𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡')}{stream.episode::exists[\" 𝔼{stream.episode::string::translate('0123456789','𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡')}\"||\"\"]}  ·  \"||\"{stream.episode::exists[\"𝔼{stream.episode::string::translate('0123456789','𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡')}  ·  \"||\"\"]}\"]}{stream.resolution::=2160p[\"𝟜𝕂\"||\"{stream.resolution::=1440p[\"𝟚𝕂\"||\"{stream.resolution::=1080p[\"𝟙𝟘𝟠𝟘𝕡\"||\"{stream.resolution::=720p[\"𝟟𝟚𝟘𝕡\"||\"\"]}\"]}\"]}\"]}{stream.visualTags::in('dv','hdr+dv','dv only')[\" 𝔻𝕍\"||\"{stream.visualTags::in('hdr10+')[\" ℍ𝔻ℝ𝟙𝟘+\"||\"{stream.visualTags::in('hdr10')[\" ℍ𝔻ℝ𝟙𝟘\"||\"{stream.visualTags::in('hdr','hdr only')[\" ℍ𝔻ℝ\"||\"\"]}\"]}\"]}\"]}{stream.visualTags::in('imax')[\"  ·  𝕀𝕄𝔸𝕏\"||\"\"]}{?  ·  {stream.releaseGroup::smallcaps}?}",
+        "description": "{?{service.shortName}?}{service.cached[\" ✓\"||\" ○\"||\"\"]}{service.shortName::exists[\"  ·  \"||\"\"]}{?◈ {stream.size::bytes::translate('0123456789','𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗')::smallcaps}?}{?  ·  {addon.name::smallcaps}?}"
+      }
+    }
+  },
+  "yearMatching": {
+    "enabled": true,
+    "strict": true,
+    "requestTypes": [
+      "movie",
+      "series",
+      "anime"
+    ],
+    "addons": []
+  },
+  "titleMatching": {
+    "mode": "exact",
+    "similarityThreshold": 1,
+    "enabled": true,
+    "requestTypes": [
+      "movie",
+      "series",
+      "anime"
+    ],
+    "addons": []
+  },
+  "seasonEpisodeMatching": {
+    "enabled": true,
+    "strict": true,
+    "requestTypes": [
+      "series"
+    ],
+    "addons": []
+  },
+  "deduplicator": {
+    "enabled": true,
+    "excludeAddons": [],
+    "keys": [
+      "filename",
+      "infoHash",
+      "smartDetect"
+    ],
+    "cached": "single_result",
+    "uncached": "per_service",
+    "p2p": "single_result",
+    "libraryBehaviour": "prefer"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+data/
+.vercel/
+.env
+.env.*
+*.private.*
+*.log
+deployment/source.zip

@@ -1,0 +1,10 @@
+.git
+.vercel
+node_modules
+data
+test
+scripts
+*.private.*
+*.private.txt
+*.log
+.env*
