@@ -1,0 +1,14 @@
+# Render's free plan sleeps after ~15 idle minutes and takes ~1 minute to wake,
+# which is longer than Stremio/Nuvio wait. A light health ping keeps the addon warm.
+name: Keep hosted addon awake
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -fsS --max-time 120 --retry 2 https://torbox-direct.onrender.com/health
