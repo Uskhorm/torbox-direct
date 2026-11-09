@@ -1,6 +1,10 @@
 import {parseTorrentTitle} from '@viren070/parse-torrent-title';
-import {memoizeParser} from './cache.mjs';
+import {BoundedCache,memoizeParser} from './cache.mjs';
 import {normaliseTitle} from '../vendor/aiostreams-parser.mjs';
+// Public index listings are shared by all accounts and every episode of a show.
+const torzListings=new BoundedCache({maxEntries:512,maxWeight:48*1024*1024});
+const torzPending=new Map();
+const TORZ_TTL_MS=30*60000;
 const parsePublicTitle=memoizeParser(parseTorrentTitle,{maxEntries:4096,maxWeight:2*1024*1024});
 
 export const normalizeTitle=value=>String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,' and ').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
@@ -44,14 +48,29 @@ export class HashDiscovery {
         // A show-level query also finds complete packs missing episode mappings.
         const params={t:request.type==='movie'?'movie':'tvsearch',imdbid:metadata.imdb.slice(2),o:'json',limit:'0'};
         for(const [name,value] of Object.entries(params))url.searchParams.set(name,value);
-        const response=await this.fetch(url,{signal:AbortSignal.timeout(6500),redirect:'error'});
-        if(!response.ok)throw new Error('Metadata index unavailable');
-        const data=await response.json(),items=data.channel?.items;
-        if(!Array.isArray(items))throw new Error('Invalid metadata index response');
-        for(const item of items){
-          const attrs=Object.fromEntries((item.attr||[]).map(x=>[x['@attributes']?.name,x['@attributes']?.value]));
-          const hash=attrs.infohash||item.guid;
-          const id=String(attrs.imdb||'').replace(/^tt/,'');
+        // The show-level result is identical for every episode: fetch and slim it once.
+        const listingKey=`${params.t}:${params.imdbid}`;
+        let listing=torzListings.get(listingKey);
+        if(!listing){
+          listing=torzPending.get(listingKey)||(async()=>{
+            const response=await this.fetch(url,{signal:AbortSignal.timeout(6500),redirect:'error'});
+            if(!response.ok)throw new Error('Metadata index unavailable');
+            const data=await response.json(),items=data.channel?.items;
+            if(!Array.isArray(items))throw new Error('Invalid metadata index response');
+            const slim=items.map(item=>{
+              const attrs=Object.fromEntries((item.attr||[]).map(x=>[x['@attributes']?.name,x['@attributes']?.value]));
+              return {hash:attrs.infohash||item.guid,title:item.title,imdb:attrs.imdb,size:attrs.size};
+            });
+            torzListings.set(listingKey,slim,{ttl:TORZ_TTL_MS,weight:256+slim.reduce((sum,x)=>sum+160+2*String(x.title||'').length,0)});
+            return slim;
+          })().finally(()=>torzPending.delete(listingKey));
+          torzPending.set(listingKey,listing);
+          listing=await listing;
+        }
+        for(const item of listing){
+          const hash=item.hash;
+          const id=String(item.imdb||'').replace(/^tt/,'');
+          const attrs={size:item.size};
           if(!/^[a-f0-9]{40}$/i.test(hash||'')||!item.title)continue;
           const trusted=id===metadata.imdb.slice(2);
           if(id&&!trusted||!trusted&&!matchesTitle(item.title,metadata,request))continue;

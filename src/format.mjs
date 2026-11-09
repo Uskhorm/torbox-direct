@@ -14,7 +14,9 @@ export function parseRelease(value){
   }
   if(parsed.releaseGroup)attributes=attributes.replace(parsed.releaseGroup,' ');
   attributes=attributes.replace(/[^\p{Script=Latin}\p{N}\p{P}\p{Z}]/gu,' ');
-  const languageFile=parseFile('Media '+attributes);
+  // The attribute-only reparse can only narrow languages the full parse found, so
+  // skip that second full parse (half the CPU of a search) when it found none.
+  const languageFile=parsed.languages?.length?parseFile('Media '+attributes):{languages:[]};
   const countedLanguages=[];
   if(/(?:^|[ ._-])\d+xEng(?:[ ._-]|$)/i.test(attributes))countedLanguages.push('English');
   if(/(?:^|[ ._-])\d+xRus(?:[ ._-]|$)/i.test(attributes))countedLanguages.push('Russian');

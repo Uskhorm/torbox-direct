@@ -2,6 +2,12 @@ import {parseTorrentTitle} from '@viren070/parse-torrent-title';
 import {BoundedCache} from './cache.mjs';
 import {normaliseTitle} from '../vendor/aiostreams-parser.mjs';
 const HASH = /^[a-f0-9]{40}$/i;
+// A torrent's file list never changes, so it is shared across accounts and kept for
+// a day. Availability is still asked of TorBox on every uncached search; only the
+// (often multi-megabyte) file listings are skipped for torrents seen before.
+const torrentFiles=new BoundedCache({maxEntries:20000,maxWeight:64*1024*1024});
+const FILE_LIST_TTL_MS=24*3600000;
+const fileListWeight=item=>512+(item.files||[]).reduce((sum,file)=>sum+256+2*((file.name||'').length+(file.short_name||'').length),0);
 
 export class TorBoxError extends Error {
   constructor(code, message, status = 502) {
@@ -99,20 +105,28 @@ export class TorBox {
     // TorBox's POST endpoint supports large hash arrays. Batch size is a
     // transport boundary, never a candidate cap; every hash is checked.
     const batchSize=4096;
-    const chunks=[];for(let offset=0;offset<hashes.length;offset+=batchSize)chunks.push(hashes.slice(offset,offset+batchSize));
+    const chunks=[];
+    const known=hashes.filter(hash=>torrentFiles.get(hash)),unknown=hashes.filter(hash=>!torrentFiles.get(hash));
+    for(const [group,listFiles] of [[unknown,true],[known,false]])
+      for(let offset=0;offset<group.length;offset+=batchSize)chunks.push({hashes:group.slice(offset,offset+batchSize),listFiles});
     let succeeded=0,failure;
     for(let offset=0;offset<chunks.length;offset+=2){
-      const results=await Promise.allSettled(chunks.slice(offset,offset+2).map(async chunk=>({chunk,data:await this.request('/torrents/checkcached',{method:'POST',body:{hashes:chunk},query:{format:'object',list_files:true},timeoutMs:12000})})));
+      const results=await Promise.allSettled(chunks.slice(offset,offset+2).map(async({hashes:chunk,listFiles})=>({chunk,listFiles,data:await this.request('/torrents/checkcached',{method:'POST',body:{hashes:chunk},query:{format:'object',list_files:listFiles},timeoutMs:12000})})));
       for(const result of results){
         if(result.status==='rejected'){
           if(['BAD_TOKEN','AUTH_ERROR','NO_AUTH'].includes(result.reason.code))throw result.reason;
           failure=result.reason;continue;
         }
-        succeeded++;const {chunk,data}=result.value;for(const hash of chunk)checked.add(hash);
+        succeeded++;const {chunk,listFiles,data}=result.value;for(const hash of chunk)checked.add(hash);
         const requested=new Set(chunk);
         for (const [key, item] of Object.entries(data || {})) {
           const hash = (item?.hash || key).toLowerCase();
-          if (requested.has(hash) && item && typeof item === 'object' && Array.isArray(item.files) && item.files.length) found.set(hash, item);
+          if (!requested.has(hash) || !item || typeof item !== 'object') continue;
+          if (listFiles) {
+            if (Array.isArray(item.files) && item.files.length) {found.set(hash, item);torrentFiles.set(hash,item,{ttl:FILE_LIST_TTL_MS,weight:fileListWeight(item)});}
+          } else {
+            const listed=torrentFiles.get(hash);if(listed)found.set(hash,listed);
+          }
         }
       }
     }

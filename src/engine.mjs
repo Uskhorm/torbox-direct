@@ -15,17 +15,24 @@ function bindResult(result,publicBase){
   return {...result,streams:result.streams.map(stream=>({...stream,url:publicBase+'/play/'+stream.url.split('/play/')[1]}))};
 }
 
+// Cached availability changes slowly, and playback rechecks TorBox before every redirect.
+const RESULT_TTL_MS=10*60000;
+const sharedParseRelease=memoizeParser(parseRelease,{maxEntries:40000,maxWeight:48*1024*1024});
+const sharedParseCandidate=memoizeParser(parseTorrentTitle,{maxEntries:40000,maxWeight:32*1024*1024});
+
 export class DirectEngine {
   // libraryIndex holds this account's own TorBox items. Hosted mode gives every
   // configuration its own, so one account's library never reaches another's results.
-  constructor({index,libraryIndex=index,torbox,userData,signingKey,fetchImpl=fetch,tmdbKey,sources}) {
+  constructor({index,libraryIndex=index,torbox,userData,signingKey,fetchImpl=fetch,tmdbKey,sources,onSearch}) {
     this.index=index;this.libraryIndex=libraryIndex;this.torbox=torbox;this.userData=userData;this.signingKey=signingKey;
     this.catalog=new Catalog(index,{fetchImpl,tmdbKey});
     this.seed=sources?.seed||new MetadataSeed(index,{fetchImpl});
     this.discovery=sources?.discovery||new HashDiscovery(index,{fetchImpl});
-    this.cache=new BoundedCache({maxEntries:128,maxWeight:2*1024*1024});this.inflight=new Map();
-    this.parseTitle=memoizeParser(parseRelease);
-    this.parseCandidate=memoizeParser(parseTorrentTitle,{maxEntries:8192,maxWeight:2*1024*1024});
+    this.cache=new BoundedCache({maxEntries:256,maxWeight:24*1024*1024});this.inflight=new Map();
+    // Release-name parses are pure and account-independent, so every engine shares them.
+    this.parseTitle=sharedParseRelease;
+    this.parseCandidate=sharedParseCandidate;
+    this.onSearch=onSearch;
   }
   sign(payload) {
     const data=Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -49,7 +56,7 @@ export class DirectEngine {
     if(this.inflight.has(key))return bindResult(await this.inflight.get(key),publicBase);
     const pending=this._search(request,publicBase).then(value=>{
       const weight=value.streams.reduce((sum,stream)=>sum+512+2*((stream.url||'').length+(stream.name||'').length+(stream.description||'').length+(stream.behaviorHints.filename||'').length),512);
-      this.cache.set(key,value,{ttl:value.streams.length?45000:5000,weight});
+      this.cache.set(key,value,{ttl:value.streams.length?RESULT_TTL_MS:5000,weight});
       return value;
     }).finally(()=>this.inflight.delete(key));
     this.inflight.set(key,pending);return bindResult(await pending,publicBase);
@@ -98,6 +105,7 @@ export class DirectEngine {
     // Deduplicate the actual selected file, preserving distinct remuxes/editions.
     const seen=new Set();
     const unique=ranked.filter(s=>{const key=`${s.filename}:${s.size}`;if(seen.has(key))return false;seen.add(key);return true;});
+    this.onSearch?.({request,metadata:meta,rows,cached,matched,ranked:unique});
     const fmt=formatter(this.userData,meta);
     const streams=await Promise.all(unique.map(async s=>{
       const rendered=await fmt.format(s);
