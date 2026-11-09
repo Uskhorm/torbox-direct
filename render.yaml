@@ -1,0 +1,11 @@
+# Render Blueprint (free plan). Free web services sleep after ~15 idle minutes.
+services:
+  - type: web
+    name: torbox-direct
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    envVars:
+      - key: TORBOX_DIRECT_SECRET
+        sync: false

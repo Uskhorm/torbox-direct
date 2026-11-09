@@ -13,6 +13,7 @@ import {configureHTML,configureScript} from './configure.mjs';
 // install link. The server keeps an encryption secret and nothing account-specific.
 
 const ROOT=fileURLToPath(new URL('../',import.meta.url));
+const SOURCE_ARCHIVE_URL='https://github.com/Uskhorm/torbox-direct/archive/refs/heads/main.zip';
 const MAX_ENGINES=64;
 const MAX_BODY=8192;
 const CONFIGURE_LIMIT=10,CONFIGURE_WINDOW_MS=10*60000;
@@ -134,7 +135,8 @@ export function createHostedHandler({secret=process.env.TORBOX_DIRECT_SECRET,pub
       }
       if(path==='/source.zip') {
         const file=join(ROOT,'deployment/source.zip');
-        if(!existsSync(file))return send(404,{error:{code:'NOT_FOUND'}});
+        // Container hosts build from the repo without git metadata, so offer the public source instead.
+        if(!existsSync(file)){res.writeHead(302,{...SECURITY_HEADERS,Location:SOURCE_ARCHIVE_URL});res.end();return;}
         res.writeHead(200,{...SECURITY_HEADERS,'Content-Type':'application/zip','Content-Disposition':'attachment; filename="torbox-direct-source.zip"'});
         res.end(req.method==='HEAD'?undefined:readFileSync(file));return;
       }
